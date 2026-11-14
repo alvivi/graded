@@ -1,0 +1,8 @@
+// lustre_http 1.0.0. The builders return an effect that, when Lustre performs
+// it, makes the request and then runs the expectation's message constructor:
+// the effect carries the request and what the expectation carries.
+
+covers 1.0.0
+contract lustre_http.get(expect: [x]) : [Http] where runs : [], carries : [Http, x]
+contract lustre_http.post(expect: [x]) : [Http] where runs : [], carries : [Http, x]
+contract lustre_http.send(expect: [x]) : [Http] where runs : [], carries : [Http, x]

@@ -1,0 +1,4 @@
+
+covers 6.1.0, 7.0.0
+container_result glance.module
+container_result glance.precedence

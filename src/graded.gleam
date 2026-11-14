@@ -1822,7 +1822,7 @@ fn context_base(
   // Read once and kept: the knowledge base is built from it and the spec lint
   // weighs the same entries.
   let catalog = effects.read_parsed_catalog(parsed_catalog, reading)
-  let registry = signatures.with_shapes(registry, set.new())
+  let registry = signatures.with_shapes(registry, catalog.audit.containers)
   let type_info =
     type_index(
       index,
@@ -6167,7 +6167,7 @@ fn infer_base(
     reported_refusals(refused, shared.builds, dep_sources, cfg.targets)
   let reading = spec_reading(mode, registry, readings)
   let catalog = effects.read_parsed_catalog(parsed_catalog, reading)
-  let registry = signatures.with_shapes(registry, set.new())
+  let registry = signatures.with_shapes(registry, catalog.audit.containers)
   let type_info =
     type_index(
       index,

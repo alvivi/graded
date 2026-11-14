@@ -1,0 +1,80 @@
+// gleam_erlang, reviewed against the source of 1.0.0, 1.1.0, 1.2.0 and 1.3.0.
+// A message sent to a process escapes to code graded does not see: sending
+// runs it. A selector holds its handlers and runs them when it receives; what
+// a process receives from its mailbox is undescribed.
+
+covers 1.0.0 to 1.3.0
+container gleam/erlang/atom.Atom
+container gleam/erlang/charlist.Charlist
+container gleam/erlang/node.Node
+container gleam/erlang/port.Port
+container gleam/erlang/process.Monitor
+container gleam/erlang/process.Name
+container gleam/erlang/process.Pid
+container gleam/erlang/process.Timer
+container gleam/erlang/reference.Reference
+reviewed gleam/erlang/application.priv_directory
+container_result gleam/erlang/atom.create
+container_result gleam/erlang/atom.get
+container_result gleam/erlang/atom.to_string
+container_result gleam/erlang/charlist.from_string
+container_result gleam/erlang/charlist.to_string
+reviewed gleam/erlang/process.call
+reviewed gleam/erlang/process.call_forever
+reviewed gleam/erlang/process.cancel_timer
+reviewed gleam/erlang/process.demonitor_process
+container_result gleam/erlang/process.deselect
+container_result gleam/erlang/process.deselect_specific_monitor
+reviewed gleam/erlang/process.flush_messages
+reviewed gleam/erlang/process.is_alive
+reviewed gleam/erlang/process.kill
+reviewed gleam/erlang/process.link
+container_result gleam/erlang/process.map_selector
+contract gleam/erlang/process.map_selector(a: [a], b: [b]) : [b] where runs : [], relay : b(a)
+container_result gleam/erlang/process.merge_selector
+reviewed gleam/erlang/process.monitor
+reviewed gleam/erlang/process.named
+reviewed gleam/erlang/process.named_subject
+reviewed gleam/erlang/process.new_name
+reviewed gleam/erlang/process.new_selector
+reviewed gleam/erlang/process.new_subject
+reviewed gleam/erlang/process.receive
+reviewed gleam/erlang/process.receive_forever
+reviewed gleam/erlang/process.register
+container_result gleam/erlang/process.select
+container_result gleam/erlang/process.select_map
+contract gleam/erlang/process.select_map(transform: [transform]) : [transform] where runs : []
+container_result gleam/erlang/process.select_monitors
+contract gleam/erlang/process.select_monitors(mapping: [mapping]) : [mapping] where runs : []
+container_result gleam/erlang/process.select_other
+contract gleam/erlang/process.select_other(handler: [handler]) : [handler] where runs : []
+container_result gleam/erlang/process.select_record
+contract gleam/erlang/process.select_record(transform: [transform]) : [transform] where runs : []
+container_result gleam/erlang/process.select_specific_monitor
+contract gleam/erlang/process.select_specific_monitor(mapping: [mapping]) : [mapping] where runs : []
+container_result gleam/erlang/process.select_trapped_exits
+contract gleam/erlang/process.select_trapped_exits(handler: [handler]) : [handler] where runs : []
+contract gleam/erlang/process.selector_receive(from: [from]) : [Process] where runs : [from]
+contract gleam/erlang/process.selector_receive_forever(from: [from]) : [Process] where runs : [from]
+reviewed gleam/erlang/process.self
+contract gleam/erlang/process.send(message: [message]) : [Process] where runs : [message]
+contract gleam/erlang/process.send_abnormal_exit(reason: [reason]) : [Process] where runs : [reason]
+contract gleam/erlang/process.send_after(message: [message]) : [Process] where runs : [message]
+reviewed gleam/erlang/process.send_exit
+reviewed gleam/erlang/process.sleep
+reviewed gleam/erlang/process.sleep_forever
+reviewed gleam/erlang/process.spawn
+reviewed gleam/erlang/process.spawn_unlinked
+reviewed gleam/erlang/process.subject_owner
+reviewed gleam/erlang/process.trap_exits
+reviewed gleam/erlang/process.unlink
+reviewed gleam/erlang/process.unregister
+container_result gleam/erlang/reference.new
+
+covers 1.1.0 to 1.3.0
+container_result gleam/erlang/atom.cast_from_dynamic
+container_result gleam/erlang/atom.decoder
+container_result gleam/erlang/atom.to_dynamic
+
+covers 1.2.0 to 1.3.0
+reviewed gleam/erlang/process.subject_name

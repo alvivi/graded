@@ -1,0 +1,5 @@
+
+covers 1.5.0
+reviewed logging.configure
+reviewed logging.log
+reviewed logging.set_level

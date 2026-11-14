@@ -1,0 +1,19 @@
+
+covers 2.2.2
+reviewed wisp.configure_logger
+reviewed wisp.delete_temporary_files
+reviewed wisp.log_alert
+reviewed wisp.log_critical
+reviewed wisp.log_debug
+reviewed wisp.log_emergency
+reviewed wisp.log_error
+reviewed wisp.log_info
+reviewed wisp.log_notice
+reviewed wisp.log_request
+reviewed wisp.log_warning
+reviewed wisp.new_temporary_file
+reviewed wisp.random_string
+reviewed wisp.serve_static
+reviewed wisp.set_logger_level
+container_result wisp/wisp_mist.handler
+reviewed wisp/wisp_mist.handler

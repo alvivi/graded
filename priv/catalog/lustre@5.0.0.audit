@@ -1,0 +1,563 @@
+// lustre, reviewed against the source of every release from 5.0.0 to 5.7.1.
+// The element, attribute, event, effect and component builders only hold
+// what they are given. Starting or registering an application runs it;
+// rendering or querying an element runs the views it holds (memoised
+// elements, from 5.5.0); performing an effect runs it. What an application
+// built by application, simple or component carries is undescribed.
+
+covers 5.0.0 to 5.7.1
+container lustre/internals/mutable_map.MutableMap
+contract lustre.application(init: [init], update: [update], view: [view]) : [init, update, view] where runs : []
+contract lustre.component(init: [init], update: [update], view: [view]) : [init, update, view] where runs : []
+container_result lustre.dispatch
+container_result lustre.element
+reviewed lustre.is_browser
+reviewed lustre.is_registered
+contract lustre.send(message: [message]) : [Process] where runs : [message]
+reviewed lustre.shutdown
+contract lustre.simple(init: [init], update: [update], view: [view]) : [init, update, view] where runs : []
+contract lustre.start(app: [a]) : [Process, Dom] where runs : [a]
+contract lustre.start_server_component(app: [a]) : [Process] where runs : [a]
+container_result lustre/attribute.accept
+container_result lustre/attribute.accept_charset
+container_result lustre/attribute.accesskey
+container_result lustre/attribute.action
+container_result lustre/attribute.alpha
+container_result lustre/attribute.alt
+container_result lustre/attribute.aria
+container_result lustre/attribute.aria_activedescendant
+container_result lustre/attribute.aria_atomic
+container_result lustre/attribute.aria_autocomplete
+container_result lustre/attribute.aria_braillelabel
+container_result lustre/attribute.aria_brailleroledescription
+container_result lustre/attribute.aria_busy
+container_result lustre/attribute.aria_checked
+container_result lustre/attribute.aria_colcount
+container_result lustre/attribute.aria_colindex
+container_result lustre/attribute.aria_colindextext
+container_result lustre/attribute.aria_colspan
+container_result lustre/attribute.aria_controls
+container_result lustre/attribute.aria_current
+container_result lustre/attribute.aria_describedby
+container_result lustre/attribute.aria_description
+container_result lustre/attribute.aria_details
+container_result lustre/attribute.aria_disabled
+container_result lustre/attribute.aria_errormessage
+container_result lustre/attribute.aria_expanded
+container_result lustre/attribute.aria_flowto
+container_result lustre/attribute.aria_haspopup
+container_result lustre/attribute.aria_hidden
+container_result lustre/attribute.aria_invalid
+container_result lustre/attribute.aria_keyshortcuts
+container_result lustre/attribute.aria_label
+container_result lustre/attribute.aria_labelledby
+container_result lustre/attribute.aria_level
+container_result lustre/attribute.aria_live
+container_result lustre/attribute.aria_modal
+container_result lustre/attribute.aria_multiline
+container_result lustre/attribute.aria_multiselectable
+container_result lustre/attribute.aria_orientation
+container_result lustre/attribute.aria_owns
+container_result lustre/attribute.aria_placeholder
+container_result lustre/attribute.aria_posinset
+container_result lustre/attribute.aria_pressed
+container_result lustre/attribute.aria_readonly
+container_result lustre/attribute.aria_relevant
+container_result lustre/attribute.aria_required
+container_result lustre/attribute.aria_roledescription
+container_result lustre/attribute.aria_rowcount
+container_result lustre/attribute.aria_rowindex
+container_result lustre/attribute.aria_rowindextext
+container_result lustre/attribute.aria_rowspan
+container_result lustre/attribute.aria_selected
+container_result lustre/attribute.aria_setsize
+container_result lustre/attribute.aria_sort
+container_result lustre/attribute.aria_valuemax
+container_result lustre/attribute.aria_valuemin
+container_result lustre/attribute.aria_valuenow
+container_result lustre/attribute.aria_valuetext
+container_result lustre/attribute.attribute
+container_result lustre/attribute.autocapitalize
+container_result lustre/attribute.autocomplete
+container_result lustre/attribute.autocorrect
+container_result lustre/attribute.autofocus
+container_result lustre/attribute.autoplay
+container_result lustre/attribute.charset
+container_result lustre/attribute.checked
+container_result lustre/attribute.class
+container_result lustre/attribute.classes
+container_result lustre/attribute.colorspace
+container_result lustre/attribute.content
+container_result lustre/attribute.contenteditable
+container_result lustre/attribute.controls
+container_result lustre/attribute.crossorigin
+container_result lustre/attribute.data
+container_result lustre/attribute.decoding
+container_result lustre/attribute.dir
+container_result lustre/attribute.dirname
+container_result lustre/attribute.disabled
+container_result lustre/attribute.download
+container_result lustre/attribute.draggable
+container_result lustre/attribute.enctype
+container_result lustre/attribute.enterkeyhint
+container_result lustre/attribute.fetchpriority
+container_result lustre/attribute.for
+container_result lustre/attribute.form
+container_result lustre/attribute.formaction
+container_result lustre/attribute.formenctype
+container_result lustre/attribute.formmethod
+container_result lustre/attribute.formnovalidate
+container_result lustre/attribute.formtarget
+container_result lustre/attribute.height
+container_result lustre/attribute.hidden
+container_result lustre/attribute.href
+container_result lustre/attribute.hreflang
+container_result lustre/attribute.http_equiv
+container_result lustre/attribute.id
+container_result lustre/attribute.inert
+container_result lustre/attribute.inputmode
+container_result lustre/attribute.is
+container_result lustre/attribute.ismap
+container_result lustre/attribute.itemid
+container_result lustre/attribute.itemprop
+container_result lustre/attribute.itemscope
+container_result lustre/attribute.itemtype
+container_result lustre/attribute.lang
+container_result lustre/attribute.list
+container_result lustre/attribute.loading
+container_result lustre/attribute.loop
+container_result lustre/attribute.max
+container_result lustre/attribute.maxlength
+container_result lustre/attribute.media
+container_result lustre/attribute.method
+container_result lustre/attribute.min
+container_result lustre/attribute.minlength
+container_result lustre/attribute.multiple
+container_result lustre/attribute.muted
+container_result lustre/attribute.name
+container_result lustre/attribute.nonce
+container_result lustre/attribute.none
+container_result lustre/attribute.novalidate
+container_result lustre/attribute.pattern
+container_result lustre/attribute.ping
+container_result lustre/attribute.placeholder
+container_result lustre/attribute.playsinline
+container_result lustre/attribute.popover
+container_result lustre/attribute.popovertarget
+container_result lustre/attribute.popovertargetaction
+container_result lustre/attribute.poster
+container_result lustre/attribute.preload
+container_result lustre/attribute.property
+container_result lustre/attribute.readonly
+container_result lustre/attribute.referrerpolicy
+container_result lustre/attribute.rel
+container_result lustre/attribute.required
+container_result lustre/attribute.role
+container_result lustre/attribute.selected
+container_result lustre/attribute.shadowrootclonable
+container_result lustre/attribute.shadowrootdelegatesfocus
+container_result lustre/attribute.shadowrootmode
+container_result lustre/attribute.shadowrootserializable
+container_result lustre/attribute.size
+container_result lustre/attribute.sizes
+container_result lustre/attribute.spellcheck
+container_result lustre/attribute.src
+container_result lustre/attribute.srcset
+container_result lustre/attribute.step
+container_result lustre/attribute.style
+container_result lustre/attribute.styles
+container_result lustre/attribute.tabindex
+container_result lustre/attribute.target
+container_result lustre/attribute.title
+container_result lustre/attribute.translate
+container_result lustre/attribute.type_
+container_result lustre/attribute.usemap
+container_result lustre/attribute.value
+container_result lustre/attribute.width
+container_result lustre/attribute.writingsuggestions
+container_result lustre/component.adopt_styles
+container_result lustre/component.clear_form_value
+container_result lustre/component.default_slot
+container_result lustre/component.exportparts
+container_result lustre/component.form_associated
+container_result lustre/component.named_slot
+container_result lustre/component.on_attribute_change
+contract lustre/component.on_attribute_change(decoder: [decoder]) : [decoder] where runs : []
+container_result lustre/component.on_form_autofill
+contract lustre/component.on_form_autofill(handler: [handler]) : [handler] where runs : []
+container_result lustre/component.on_form_reset
+container_result lustre/component.on_form_restore
+contract lustre/component.on_form_restore(handler: [handler]) : [handler] where runs : []
+container_result lustre/component.on_property_change
+container_result lustre/component.open_shadow_root
+container_result lustre/component.part
+container_result lustre/component.remove_pseudo_state
+container_result lustre/component.set_form_value
+container_result lustre/component.set_pseudo_state
+container_result lustre/component.slot
+contract lustre/effect.after_paint(effect: [effect]) : [effect([])] where carries : [effect([])]
+container_result lustre/effect.batch
+contract lustre/effect.before_paint(effect: [effect]) : [effect([])] where carries : [effect([])]
+container_result lustre/effect.event
+contract lustre/effect.from(effect: [effect]) : [effect([])] where carries : [effect([])]
+container_result lustre/effect.map
+contract lustre/effect.map(effect: [effect], f: [f]) : [f] where runs : [], relay : f(effect)
+container_result lustre/effect.none
+contract lustre/effect.perform(effect: [effect]) : [] where runs : [effect]
+container_result lustre/effect.select
+container_result lustre/element.advanced
+container_result lustre/element.element
+container_result lustre/element.fragment
+container_result lustre/element.map
+contract lustre/element.map(element: [element], f: [f]) : [f] where runs : [], relay : f(element)
+container_result lustre/element.namespaced
+container_result lustre/element.none
+container_result lustre/element.text
+contract lustre/element.to_document_string(el: [el]) : [] where runs : [el]
+contract lustre/element.to_document_string_tree(el: [el]) : [] where runs : [el]
+contract lustre/element.to_readable_string(el: [el]) : [] where runs : [el]
+contract lustre/element.to_string(element: [element]) : [] where runs : [element]
+contract lustre/element.to_string_tree(element: [element]) : [] where runs : [element]
+container_result lustre/element.unsafe_raw_html
+container_result lustre/element/html.a
+container_result lustre/element/html.abbr
+container_result lustre/element/html.address
+container_result lustre/element/html.area
+container_result lustre/element/html.article
+container_result lustre/element/html.aside
+container_result lustre/element/html.audio
+container_result lustre/element/html.b
+container_result lustre/element/html.base
+container_result lustre/element/html.bdi
+container_result lustre/element/html.bdo
+container_result lustre/element/html.blockquote
+container_result lustre/element/html.body
+container_result lustre/element/html.br
+container_result lustre/element/html.button
+container_result lustre/element/html.canvas
+container_result lustre/element/html.caption
+container_result lustre/element/html.cite
+container_result lustre/element/html.code
+container_result lustre/element/html.col
+container_result lustre/element/html.colgroup
+container_result lustre/element/html.data
+container_result lustre/element/html.datalist
+container_result lustre/element/html.dd
+container_result lustre/element/html.del
+container_result lustre/element/html.details
+container_result lustre/element/html.dfn
+container_result lustre/element/html.dialog
+container_result lustre/element/html.div
+container_result lustre/element/html.dl
+container_result lustre/element/html.dt
+container_result lustre/element/html.em
+container_result lustre/element/html.embed
+container_result lustre/element/html.fieldset
+container_result lustre/element/html.figcaption
+container_result lustre/element/html.figure
+container_result lustre/element/html.footer
+container_result lustre/element/html.form
+container_result lustre/element/html.h1
+container_result lustre/element/html.h2
+container_result lustre/element/html.h3
+container_result lustre/element/html.h4
+container_result lustre/element/html.h5
+container_result lustre/element/html.h6
+container_result lustre/element/html.head
+container_result lustre/element/html.header
+container_result lustre/element/html.hgroup
+container_result lustre/element/html.hr
+container_result lustre/element/html.html
+container_result lustre/element/html.i
+container_result lustre/element/html.iframe
+container_result lustre/element/html.img
+container_result lustre/element/html.input
+container_result lustre/element/html.ins
+container_result lustre/element/html.kbd
+container_result lustre/element/html.label
+container_result lustre/element/html.legend
+container_result lustre/element/html.li
+container_result lustre/element/html.link
+container_result lustre/element/html.main
+container_result lustre/element/html.map
+container_result lustre/element/html.mark
+container_result lustre/element/html.math
+container_result lustre/element/html.menu
+container_result lustre/element/html.meta
+container_result lustre/element/html.meter
+container_result lustre/element/html.nav
+container_result lustre/element/html.noscript
+container_result lustre/element/html.object
+container_result lustre/element/html.ol
+container_result lustre/element/html.optgroup
+container_result lustre/element/html.option
+container_result lustre/element/html.output
+container_result lustre/element/html.p
+container_result lustre/element/html.picture
+container_result lustre/element/html.portal
+container_result lustre/element/html.pre
+container_result lustre/element/html.progress
+container_result lustre/element/html.q
+container_result lustre/element/html.rp
+container_result lustre/element/html.rt
+container_result lustre/element/html.ruby
+container_result lustre/element/html.s
+container_result lustre/element/html.samp
+container_result lustre/element/html.script
+container_result lustre/element/html.search
+container_result lustre/element/html.section
+container_result lustre/element/html.select
+container_result lustre/element/html.slot
+container_result lustre/element/html.small
+container_result lustre/element/html.source
+container_result lustre/element/html.span
+container_result lustre/element/html.strong
+container_result lustre/element/html.style
+container_result lustre/element/html.sub
+container_result lustre/element/html.summary
+container_result lustre/element/html.sup
+container_result lustre/element/html.svg
+container_result lustre/element/html.table
+container_result lustre/element/html.tbody
+container_result lustre/element/html.td
+container_result lustre/element/html.template
+container_result lustre/element/html.text
+container_result lustre/element/html.textarea
+container_result lustre/element/html.tfoot
+container_result lustre/element/html.th
+container_result lustre/element/html.thead
+container_result lustre/element/html.time
+container_result lustre/element/html.title
+container_result lustre/element/html.tr
+container_result lustre/element/html.track
+container_result lustre/element/html.u
+container_result lustre/element/html.ul
+container_result lustre/element/html.var
+container_result lustre/element/html.video
+container_result lustre/element/html.wbr
+container_result lustre/element/keyed.div
+container_result lustre/element/keyed.dl
+container_result lustre/element/keyed.element
+container_result lustre/element/keyed.fragment
+container_result lustre/element/keyed.namespaced
+container_result lustre/element/keyed.ol
+container_result lustre/element/keyed.tbody
+container_result lustre/element/keyed.ul
+container_result lustre/element/svg.a
+container_result lustre/element/svg.animate
+container_result lustre/element/svg.animate_motion
+container_result lustre/element/svg.animate_transform
+container_result lustre/element/svg.circle
+container_result lustre/element/svg.clip_path
+container_result lustre/element/svg.defs
+container_result lustre/element/svg.desc
+container_result lustre/element/svg.ellipse
+container_result lustre/element/svg.fe_blend
+container_result lustre/element/svg.fe_color_matrix
+container_result lustre/element/svg.fe_component_transfer
+container_result lustre/element/svg.fe_composite
+container_result lustre/element/svg.fe_convolve_matrix
+container_result lustre/element/svg.fe_diffuse_lighting
+container_result lustre/element/svg.fe_displacement_map
+container_result lustre/element/svg.fe_distant_light
+container_result lustre/element/svg.fe_drop_shadow
+container_result lustre/element/svg.fe_flood
+container_result lustre/element/svg.fe_func_a
+container_result lustre/element/svg.fe_func_b
+container_result lustre/element/svg.fe_func_g
+container_result lustre/element/svg.fe_func_r
+container_result lustre/element/svg.fe_gaussian_blur
+container_result lustre/element/svg.fe_image
+container_result lustre/element/svg.fe_merge
+container_result lustre/element/svg.fe_merge_node
+container_result lustre/element/svg.fe_morphology
+container_result lustre/element/svg.fe_offset
+container_result lustre/element/svg.fe_point_light
+container_result lustre/element/svg.fe_specular_lighting
+container_result lustre/element/svg.fe_spot_light
+container_result lustre/element/svg.fe_tile
+container_result lustre/element/svg.fe_turbulence
+container_result lustre/element/svg.foreign_object
+container_result lustre/element/svg.g
+container_result lustre/element/svg.image
+container_result lustre/element/svg.line
+container_result lustre/element/svg.linear_gradient
+container_result lustre/element/svg.marker
+container_result lustre/element/svg.mask
+container_result lustre/element/svg.metadata
+container_result lustre/element/svg.missing_glyph
+container_result lustre/element/svg.mpath
+container_result lustre/element/svg.path
+container_result lustre/element/svg.pattern
+container_result lustre/element/svg.polygon
+container_result lustre/element/svg.polyline
+container_result lustre/element/svg.radial_gradient
+container_result lustre/element/svg.rect
+container_result lustre/element/svg.script
+container_result lustre/element/svg.set
+container_result lustre/element/svg.stop
+container_result lustre/element/svg.style
+container_result lustre/element/svg.svg
+container_result lustre/element/svg.switch
+container_result lustre/element/svg.symbol
+container_result lustre/element/svg.text
+container_result lustre/element/svg.text_path
+container_result lustre/element/svg.title
+container_result lustre/element/svg.tspan
+container_result lustre/element/svg.use_
+container_result lustre/event.debounce
+container_result lustre/event.emit
+container_result lustre/event.on
+container_result lustre/event.on_blur
+container_result lustre/event.on_change
+container_result lustre/event.on_check
+container_result lustre/event.on_click
+container_result lustre/event.on_focus
+container_result lustre/event.on_input
+container_result lustre/event.on_keydown
+container_result lustre/event.on_keypress
+container_result lustre/event.on_keyup
+container_result lustre/event.on_mouse_down
+container_result lustre/event.on_mouse_enter
+container_result lustre/event.on_mouse_leave
+container_result lustre/event.on_mouse_out
+container_result lustre/event.on_mouse_over
+container_result lustre/event.on_mouse_up
+container_result lustre/event.on_submit
+container_result lustre/event.prevent_default
+container_result lustre/event.stop_propagation
+container_result lustre/event.throttle
+contract lustre/server_component.client_message_to_json(message: [message]) : [] where runs : [message]
+container_result lustre/server_component.deregister_callback
+contract lustre/server_component.deregister_callback(callback: [callback]) : [Process, callback] where runs : []
+container_result lustre/server_component.deregister_subject
+container_result lustre/server_component.element
+reviewed lustre/server_component.emit
+container_result lustre/server_component.include
+reviewed lustre/server_component.method
+reviewed lustre/server_component.pid
+container_result lustre/server_component.register_callback
+contract lustre/server_component.register_callback(callback: [callback]) : [Process, callback] where runs : []
+container_result lustre/server_component.register_subject
+reviewed lustre/server_component.route
+reviewed lustre/server_component.runtime_message_decoder
+reviewed lustre/server_component.script
+container_result lustre/server_component.select
+contract lustre/server_component.select(sel: [sel]) : [sel] where runs : []
+reviewed lustre/server_component.subject
+
+covers 5.0.0 to 5.5.2
+container_result lustre/component.new
+container_result lustre/component.to_server_component_config
+
+covers 5.1.0 to 5.7.1
+container_result lustre/attribute.abbr
+container_result lustre/attribute.colspan
+container_result lustre/attribute.default_value
+container_result lustre/attribute.headers
+container_result lustre/attribute.rowspan
+container_result lustre/attribute.scope
+container_result lustre/attribute.span
+container_result lustre/dev/query.and
+container_result lustre/dev/query.aria
+container_result lustre/dev/query.attribute
+container_result lustre/dev/query.child
+container_result lustre/dev/query.class
+container_result lustre/dev/query.data
+container_result lustre/dev/query.descendant
+container_result lustre/dev/query.element
+container_result lustre/dev/query.find
+contract lustre/dev/query.find(root: [root]) : [] where runs : [root]
+container_result lustre/dev/query.find_all
+contract lustre/dev/query.find_all(root: [root]) : [] where runs : [root]
+container_result lustre/dev/query.find_path
+contract lustre/dev/query.find_path(root: [root]) : [] where runs : [root]
+container_result lustre/dev/query.id
+container_result lustre/dev/query.namespaced
+container_result lustre/dev/query.style
+container_result lustre/dev/query.tag
+container_result lustre/dev/query.test_id
+container_result lustre/dev/query.text
+container_result lustre/dev/query.to_readable_string
+
+covers 5.2.0 to 5.7.1
+container_result lustre/dev/query.has
+contract lustre/dev/query.has(element: [element]) : [] where runs : [element]
+container_result lustre/dev/query.matches
+contract lustre/dev/query.matches(element: [element]) : [] where runs : [element]
+container_result lustre/event.advanced
+container_result lustre/event.handler
+
+covers 5.3.0 to 5.7.1
+container_result lustre/component.delegates_focus
+container_result lustre/component.on_context_change
+container_result lustre/component.parts
+container_result lustre/effect.provide
+container_result lustre/element/svg.filter
+container_result lustre/element/svg.view
+
+covers 5.4.0 to 5.7.1
+container_result lustre/attribute.as_
+container_result lustre/attribute.blocking
+container_result lustre/attribute.default_checked
+container_result lustre/attribute.default_selected
+container_result lustre/attribute.integrity
+container_result lustre/attribute.open
+
+covers 5.5.0 to 5.7.1
+container_result lustre.factory
+container_result lustre.named
+container_result lustre.supervised
+container_result lustre/attribute.cols
+container_result lustre/attribute.datetime
+container_result lustre/attribute.rows
+container_result lustre/element.memo
+contract lustre/element.memo(view: [view]) : [view] where runs : []
+container_result lustre/element.ref
+container_result lustre/element/mathml.annotation
+container_result lustre/element/mathml.annotation_xml
+container_result lustre/element/mathml.merror
+container_result lustre/element/mathml.mfrac
+container_result lustre/element/mathml.mi
+container_result lustre/element/mathml.mmultiscripts
+container_result lustre/element/mathml.mn
+container_result lustre/element/mathml.mo
+container_result lustre/element/mathml.mover
+container_result lustre/element/mathml.mpadded
+container_result lustre/element/mathml.mphantom
+container_result lustre/element/mathml.mprescripts
+container_result lustre/element/mathml.mroot
+container_result lustre/element/mathml.mrow
+container_result lustre/element/mathml.ms
+container_result lustre/element/mathml.mspace
+container_result lustre/element/mathml.msqrt
+container_result lustre/element/mathml.mstyle
+container_result lustre/element/mathml.msub
+container_result lustre/element/mathml.msubsup
+container_result lustre/element/mathml.msup
+container_result lustre/element/mathml.mtable
+container_result lustre/element/mathml.mtd
+container_result lustre/element/mathml.mtext
+container_result lustre/element/mathml.mtr
+container_result lustre/element/mathml.munder
+container_result lustre/element/mathml.munderover
+container_result lustre/element/mathml.semantics
+
+covers 5.6.0 to 5.7.1
+container_result lustre/component.on_adopt
+container_result lustre/component.on_connect
+container_result lustre/component.on_disconnect
+container_result lustre/component.prerender
+contract lustre/component.prerender(component: [component]) : [] where runs : [component]
+
+covers 5.7.0 to 5.7.1
+container_result lustre/attribute.closedby
+container_result lustre/attribute.command
+container_result lustre/attribute.commandfor
+container_result lustre/component.on_form_disabled
+contract lustre/component.on_form_disabled(handler: [handler]) : [handler] where runs : []
+container_result lustre/effect.subscribe
+container_result lustre/effect.unsubscribe
+reviewed lustre/server_component.csrf_token
+
+unreviewed lustre.register : its parameters are discarded names, which a line cannot bind: it stays on the default, running its application

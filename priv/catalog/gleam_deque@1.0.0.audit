@@ -1,0 +1,15 @@
+
+covers 1.0.0
+container_result gleam/deque.from_list
+container_result gleam/deque.is_empty
+container_result gleam/deque.is_equal
+container_result gleam/deque.is_logically_equal
+contract gleam/deque.is_logically_equal(element_is_equal: [element_is_equal]) : [element_is_equal] where runs : []
+container_result gleam/deque.length
+container_result gleam/deque.new
+container_result gleam/deque.pop_back
+container_result gleam/deque.pop_front
+container_result gleam/deque.push_back
+container_result gleam/deque.push_front
+container_result gleam/deque.reverse
+container_result gleam/deque.to_list

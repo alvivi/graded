@@ -1,0 +1,8 @@
+
+covers 1.3.1
+container_result gleam/bitwise.and
+container_result gleam/bitwise.exclusive_or
+container_result gleam/bitwise.not
+container_result gleam/bitwise.or
+container_result gleam/bitwise.shift_left
+container_result gleam/bitwise.shift_right

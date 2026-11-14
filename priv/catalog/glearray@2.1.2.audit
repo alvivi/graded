@@ -1,0 +1,16 @@
+
+covers 2.1.2
+container glearray.Array
+container_result glearray.copy_insert
+container_result glearray.copy_push
+container_result glearray.copy_set
+container_result glearray.do_get
+container_result glearray.do_insert
+container_result glearray.do_set
+container_result glearray.from_list
+container_result glearray.get
+container_result glearray.get_or_default
+container_result glearray.is_valid_index
+container_result glearray.length
+container_result glearray.new
+container_result glearray.to_list

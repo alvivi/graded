@@ -1,0 +1,43 @@
+
+covers 1.0.0, 1.11.0
+reviewed gleam/time/calendar.local_offset
+container_result gleam/time/duration.add
+container_result gleam/time/duration.compare
+container_result gleam/time/duration.difference
+container_result gleam/time/duration.milliseconds
+container_result gleam/time/duration.nanoseconds
+container_result gleam/time/duration.seconds
+container_result gleam/time/duration.to_iso8601_string
+container_result gleam/time/duration.to_seconds
+container_result gleam/time/duration.to_seconds_and_nanoseconds
+container_result gleam/time/timestamp.add
+container_result gleam/time/timestamp.compare
+container_result gleam/time/timestamp.difference
+container_result gleam/time/timestamp.from_calendar
+container_result gleam/time/timestamp.from_unix_seconds
+container_result gleam/time/timestamp.from_unix_seconds_and_nanoseconds
+container_result gleam/time/timestamp.parse_rfc3339
+reviewed gleam/time/timestamp.system_time
+container_result gleam/time/timestamp.to_calendar
+container_result gleam/time/timestamp.to_rfc3339
+container_result gleam/time/timestamp.to_unix_seconds
+container_result gleam/time/timestamp.to_unix_seconds_and_nanoseconds
+
+covers 1.11.0
+container_result gleam/time/calendar.day_of_week
+container_result gleam/time/calendar.is_leap_year
+container_result gleam/time/calendar.is_valid_date
+container_result gleam/time/calendar.is_valid_time_of_day
+container_result gleam/time/calendar.month_from_int
+container_result gleam/time/calendar.month_to_int
+container_result gleam/time/calendar.month_to_string
+container_result gleam/time/calendar.naive_date_compare
+container_result gleam/time/duration.approximate
+container_result gleam/time/duration.hours
+container_result gleam/time/duration.minutes
+container_result gleam/time/duration.subtract
+container_result gleam/time/duration.to_milliseconds
+container_result gleam/time/timestamp.expand_rfc850_year_relative_to
+container_result gleam/time/timestamp.parse_http_date
+container_result gleam/time/timestamp.subtract
+container_result gleam/time/timestamp.to_http_date

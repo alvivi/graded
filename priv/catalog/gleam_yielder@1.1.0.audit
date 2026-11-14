@@ -1,0 +1,85 @@
+// gleam_yielder 1.1.0. A yielder holds the thunks that produce its elements:
+// the consumers run it, and the builders only hold it and their callbacks.
+
+covers 1.1.0
+container_result gleam/yielder.all
+contract gleam/yielder.all(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [yielder], relay : predicate(yielder)
+container_result gleam/yielder.any
+contract gleam/yielder.any(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [yielder], relay : predicate(yielder)
+container_result gleam/yielder.append
+container_result gleam/yielder.at
+contract gleam/yielder.at(yielder: [yielder]) : [] where runs : [yielder]
+container_result gleam/yielder.chunk
+contract gleam/yielder.chunk(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(yielder)
+container_result gleam/yielder.concat
+container_result gleam/yielder.cycle
+container_result gleam/yielder.drop
+container_result gleam/yielder.drop_while
+contract gleam/yielder.drop_while(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(yielder)
+container_result gleam/yielder.each
+contract gleam/yielder.each(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(yielder)
+container_result gleam/yielder.empty
+container_result gleam/yielder.filter
+contract gleam/yielder.filter(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(yielder)
+container_result gleam/yielder.filter_map
+contract gleam/yielder.filter_map(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(yielder)
+container_result gleam/yielder.find
+contract gleam/yielder.find(haystack: [haystack], is_desired: [is_desired]) : [is_desired] where runs : [haystack], relay : is_desired(haystack)
+container_result gleam/yielder.find_map
+contract gleam/yielder.find_map(haystack: [haystack], is_desired: [is_desired]) : [is_desired] where runs : [haystack], relay : is_desired(haystack)
+container_result gleam/yielder.first
+contract gleam/yielder.first(yielder: [yielder]) : [] where runs : [yielder]
+container_result gleam/yielder.flat_map
+contract gleam/yielder.flat_map(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(yielder)
+container_result gleam/yielder.flatten
+container_result gleam/yielder.fold
+contract gleam/yielder.fold(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(_, yielder)
+container_result gleam/yielder.fold_until
+contract gleam/yielder.fold_until(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(_, yielder)
+container_result gleam/yielder.from_list
+container_result gleam/yielder.group
+contract gleam/yielder.group(yielder: [yielder], key: [key]) : [key] where runs : [yielder], relay : key(yielder)
+container_result gleam/yielder.index
+container_result gleam/yielder.interleave
+container_result gleam/yielder.intersperse
+container_result gleam/yielder.iterate
+contract gleam/yielder.iterate(f: [f]) : [f] where runs : []
+container_result gleam/yielder.last
+contract gleam/yielder.last(yielder: [yielder]) : [] where runs : [yielder]
+container_result gleam/yielder.length
+contract gleam/yielder.length(yielder: [yielder]) : [] where runs : [yielder]
+container_result gleam/yielder.map
+contract gleam/yielder.map(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(yielder)
+container_result gleam/yielder.map2
+contract gleam/yielder.map2(yielder1: [yielder1], yielder2: [yielder2], fun: [fun]) : [fun] where runs : [], relay : fun(yielder1, yielder2)
+container_result gleam/yielder.once
+contract gleam/yielder.once(f: [f]) : [f] where runs : []
+container_result gleam/yielder.prepend
+container_result gleam/yielder.range
+container_result gleam/yielder.reduce
+contract gleam/yielder.reduce(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(_, yielder)
+container_result gleam/yielder.repeat
+container_result gleam/yielder.repeatedly
+contract gleam/yielder.repeatedly(f: [f]) : [f] where runs : []
+container_result gleam/yielder.run
+contract gleam/yielder.run(yielder: [yielder]) : [] where runs : [yielder]
+container_result gleam/yielder.scan
+contract gleam/yielder.scan(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(_, yielder)
+container_result gleam/yielder.single
+container_result gleam/yielder.sized_chunk
+container_result gleam/yielder.step
+contract gleam/yielder.step(yielder: [yielder]) : [] where runs : [yielder]
+container_result gleam/yielder.take
+container_result gleam/yielder.take_while
+contract gleam/yielder.take_while(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(yielder)
+container_result gleam/yielder.to_list
+contract gleam/yielder.to_list(yielder: [yielder]) : [] where runs : [yielder]
+container_result gleam/yielder.transform
+contract gleam/yielder.transform(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(_, yielder)
+container_result gleam/yielder.try_fold
+contract gleam/yielder.try_fold(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(_, yielder)
+container_result gleam/yielder.unfold
+contract gleam/yielder.unfold(f: [f]) : [f] where runs : []
+container_result gleam/yielder.yield
+contract gleam/yielder.yield(next: [next]) : [next] where runs : []
+container_result gleam/yielder.zip

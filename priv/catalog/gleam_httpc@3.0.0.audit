@@ -1,0 +1,11 @@
+
+covers 3.0.0
+reviewed gleam/httpc.configure
+reviewed gleam/httpc.dispatch
+reviewed gleam/httpc.dispatch_bits
+reviewed gleam/httpc.send
+reviewed gleam/httpc.send_bits
+reviewed gleam/httpc.verify_tls
+
+unreviewed gleam/httpc.follow_redirects : not in gleam_httpc 3.0.0
+unreviewed gleam/httpc.timeout : not in gleam_httpc 3.0.0

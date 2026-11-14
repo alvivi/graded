@@ -1,0 +1,12 @@
+
+covers 1.1.2
+container_result filepath.base_name
+container_result filepath.directory_name
+container_result filepath.expand
+container_result filepath.extension
+container_result filepath.is_absolute
+container_result filepath.join
+container_result filepath.split
+container_result filepath.split_unix
+container_result filepath.split_windows
+container_result filepath.strip_extension

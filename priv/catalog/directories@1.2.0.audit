@@ -1,0 +1,13 @@
+
+covers 1.2.0
+reviewed directories.cache_dir
+reviewed directories.config_dir
+reviewed directories.config_local_dir
+reviewed directories.data_dir
+reviewed directories.data_local_dir
+reviewed directories.executable_dir
+reviewed directories.home_dir
+reviewed directories.preference_dir
+reviewed directories.runtime_dir
+reviewed directories.state_dir
+reviewed directories.tmp_dir

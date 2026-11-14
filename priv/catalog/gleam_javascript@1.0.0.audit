@@ -1,0 +1,38 @@
+
+covers 1.0.0
+container gleam/javascript/array.Array
+container gleam/javascript/promise.Promise
+container gleam/javascript/symbol.Symbol
+container_result gleam/javascript/array.fold
+contract gleam/javascript/array.fold(over: [over], with: [with]) : [with] where runs : [], relay : with(_, over)
+container_result gleam/javascript/array.fold_right
+contract gleam/javascript/array.fold_right(over: [over], with: [with]) : [with] where runs : [], relay : with(_, over)
+container_result gleam/javascript/array.from_list
+container_result gleam/javascript/array.get
+container_result gleam/javascript/array.map
+contract gleam/javascript/array.map(a: [a], with: [with]) : [with] where runs : [], relay : with(a)
+container_result gleam/javascript/array.size
+container_result gleam/javascript/array.to_list
+container_result gleam/javascript/promise.await
+contract gleam/javascript/promise.await(a: [a], b: [b]) : [b] where runs : [], relay : b(a)
+container_result gleam/javascript/promise.await_array
+container_result gleam/javascript/promise.await_list
+container_result gleam/javascript/promise.map
+contract gleam/javascript/promise.map(a: [a], b: [b]) : [b] where runs : [], relay : b(a)
+container_result gleam/javascript/promise.map_try
+contract gleam/javascript/promise.map_try(promise: [promise], callback: [callback]) : [callback] where runs : [], relay : callback(promise)
+reviewed gleam/javascript/promise.new
+container_result gleam/javascript/promise.race_array
+container_result gleam/javascript/promise.race_list
+container_result gleam/javascript/promise.rescue
+contract gleam/javascript/promise.rescue(b: [b]) : [b] where runs : []
+container_result gleam/javascript/promise.resolve
+container_result gleam/javascript/promise.start
+container_result gleam/javascript/promise.tap
+contract gleam/javascript/promise.tap(promise: [promise], callback: [callback]) : [callback] where runs : [], relay : callback(promise)
+container_result gleam/javascript/promise.try_await
+contract gleam/javascript/promise.try_await(promise: [promise], callback: [callback]) : [callback] where runs : [], relay : callback(promise)
+container_result gleam/javascript/promise.wait
+container_result gleam/javascript/symbol.description
+container_result gleam/javascript/symbol.get_or_create_global
+container_result gleam/javascript/symbol.new

@@ -1,0 +1,60 @@
+// gleam_otp, reviewed against the source of 1.0.0, 1.1.0, 1.2.0 and 1.3.0.
+// Starting an actor or a supervisor runs what its builder or specification
+// holds, in a process graded does not see; the builders only hold what they
+// are given. A message sent to an actor escapes to it.
+
+covers 1.0.0 to 1.3.0
+container gleam/otp/port.Port
+container gleam/otp/system.DebugState
+reviewed gleam/otp/actor.call
+container_result gleam/otp/actor.continue
+container_result gleam/otp/actor.initialised
+container_result gleam/otp/actor.named
+container_result gleam/otp/actor.new
+container_result gleam/otp/actor.new_with_initialiser
+contract gleam/otp/actor.new_with_initialiser(initialise: [initialise]) : [initialise] where runs : []
+container_result gleam/otp/actor.on_message
+contract gleam/otp/actor.on_message(handler: [handler]) : [handler] where runs : []
+container_result gleam/otp/actor.returning
+container_result gleam/otp/actor.selecting
+contract gleam/otp/actor.send(msg: [msg]) : [Process] where runs : [msg]
+contract gleam/otp/actor.start(builder: [builder]) : [Process] where runs : [builder]
+reviewed gleam/otp/actor.stop
+reviewed gleam/otp/actor.stop_abnormal
+container_result gleam/otp/actor.with_selector
+container_result gleam/otp/static_supervisor.add
+container_result gleam/otp/static_supervisor.auto_shutdown
+reviewed gleam/otp/static_supervisor.new
+container_result gleam/otp/static_supervisor.restart_tolerance
+contract gleam/otp/static_supervisor.start(builder: [builder]) : [Process] where runs : [builder]
+container_result gleam/otp/static_supervisor.supervised
+container_result gleam/otp/supervision.map_data
+contract gleam/otp/supervision.map_data(transform: [transform]) : [transform] where runs : []
+container_result gleam/otp/supervision.restart
+container_result gleam/otp/supervision.significant
+container_result gleam/otp/supervision.supervisor
+contract gleam/otp/supervision.supervisor(start: [start]) : [start] where runs : []
+container_result gleam/otp/supervision.timeout
+container_result gleam/otp/supervision.worker
+contract gleam/otp/supervision.worker(start: [start]) : [start] where runs : []
+reviewed gleam/otp/system.debug_state
+reviewed gleam/otp/system.get_state
+reviewed gleam/otp/system.resume
+reviewed gleam/otp/system.suspend
+
+covers 1.2.0 to 1.3.0
+reviewed gleam/otp/factory_supervisor.get_by_name
+container_result gleam/otp/factory_supervisor.named
+container_result gleam/otp/factory_supervisor.restart_strategy
+container_result gleam/otp/factory_supervisor.restart_tolerance
+contract gleam/otp/factory_supervisor.start(builder: [builder]) : [Process] where runs : [builder]
+contract gleam/otp/factory_supervisor.start_child(argument: [argument]) : [Process] where runs : [argument]
+container_result gleam/otp/factory_supervisor.supervised
+container_result gleam/otp/factory_supervisor.supervisor_child
+contract gleam/otp/factory_supervisor.supervisor_child(template: [template]) : [template] where runs : []
+container_result gleam/otp/factory_supervisor.timeout
+container_result gleam/otp/factory_supervisor.worker_child
+contract gleam/otp/factory_supervisor.worker_child(template: [template]) : [template] where runs : []
+
+covers 1.3.0
+reviewed gleam/otp/factory_supervisor.count_children

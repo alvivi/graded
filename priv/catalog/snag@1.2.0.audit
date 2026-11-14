@@ -1,0 +1,11 @@
+
+covers 1.2.0
+container_result snag.context
+container_result snag.error
+container_result snag.layer
+container_result snag.line_print
+container_result snag.map_error
+contract snag.map_error(result: [result], describer: [describer]) : [describer] where runs : [], relay : describer(result)
+container_result snag.new
+container_result snag.pretty_print
+container_result snag.replace_error

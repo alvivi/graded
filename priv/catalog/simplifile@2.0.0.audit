@@ -1,0 +1,43 @@
+
+covers 2.0.0, 2.7.0
+reviewed simplifile.append
+reviewed simplifile.append_bits
+reviewed simplifile.clear_directory
+reviewed simplifile.copy_directory
+reviewed simplifile.copy_file
+reviewed simplifile.create_directory
+reviewed simplifile.create_directory_all
+reviewed simplifile.create_file
+reviewed simplifile.create_symlink
+reviewed simplifile.current_directory
+reviewed simplifile.delete
+reviewed simplifile.delete_all
+reviewed simplifile.describe_error
+reviewed simplifile.file_info
+reviewed simplifile.file_permissions_to_octal
+reviewed simplifile.get_files
+reviewed simplifile.is_directory
+reviewed simplifile.is_file
+reviewed simplifile.is_symlink
+reviewed simplifile.read
+reviewed simplifile.read_bits
+reviewed simplifile.read_directory
+reviewed simplifile.rename_directory
+reviewed simplifile.rename_file
+reviewed simplifile.set_permissions
+reviewed simplifile.set_permissions_octal
+reviewed simplifile.write
+reviewed simplifile.write_bits
+
+covers 2.7.0
+reviewed simplifile.copy
+reviewed simplifile.create_link
+reviewed simplifile.delete_file
+reviewed simplifile.exists
+reviewed simplifile.file_info_permissions
+reviewed simplifile.file_info_permissions_octal
+reviewed simplifile.file_info_type
+reviewed simplifile.link_info
+reviewed simplifile.rename
+reviewed simplifile.resolve
+reviewed simplifile.touch

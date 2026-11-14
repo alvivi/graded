@@ -1,0 +1,11 @@
+
+covers 1.1.1
+container gleam/regexp.Regexp
+container_result gleam/regexp.check
+container_result gleam/regexp.compile
+container_result gleam/regexp.from_string
+container_result gleam/regexp.match_map
+contract gleam/regexp.match_map(substitute: [substitute]) : [substitute] where runs : []
+container_result gleam/regexp.replace
+container_result gleam/regexp.scan
+container_result gleam/regexp.split
