@@ -3682,3 +3682,37 @@ pub fn a_declared_gleam_function_widens_on_the_value_channel_alone_test() {
   effects.value_channel_bounds(base, name)
   |> should.equal([ParamBound(name: "with", effects: types.TVar("with"))])
 }
+
+// Latent-effect reading
+//
+// The reading a run chose before parsing travels with the knowledge base its
+// loaders build.
+
+pub fn a_knowledge_base_carries_the_reading_it_was_loaded_under_test() {
+  let catalog = effects.load_project_catalog([], "/tmp/graded_no_manifest.toml")
+  effects.knowledge_base_from_catalog_with(
+    "/tmp/graded_no_packages",
+    catalog,
+    dict.new(),
+    types.Active,
+  )
+  |> effects.lat_mode
+  |> should.equal(types.Active)
+  effects.knowledge_base_from_catalog(
+    "/tmp/graded_no_packages",
+    catalog,
+    dict.new(),
+  )
+  |> effects.lat_mode
+  |> should.equal(types.Inactive)
+}
+
+pub fn every_knowledge_base_reads_inactive_unless_told_test() {
+  effects.new_knowledge_base()
+  |> effects.lat_mode
+  |> should.equal(types.Inactive)
+  effects.new_knowledge_base()
+  |> effects.with_lat_mode(types.Active)
+  |> effects.lat_mode
+  |> should.equal(types.Active)
+}

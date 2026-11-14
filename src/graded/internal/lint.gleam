@@ -71,6 +71,8 @@ pub type Context {
     // resolved. A thunk, so a spec with no `assume` or declared-returns line
     // never pays for the walk that answers it.
     dependency_sources_are_complete: fn() -> Bool,
+    // The latent-effect reading the spec was parsed under.
+    mode: types.LatMode,
   )
 }
 

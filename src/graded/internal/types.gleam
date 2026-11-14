@@ -203,6 +203,19 @@ pub fn is_wholly_unknown(effect_set: EffectSet) -> Bool {
   }
 }
 
+// Latent-effect reading
+//
+// Whether specs, catalogs and call sites are read under the latent-effect
+// rules. Chosen once per run, before anything is parsed, and carried by every
+// reader and knowledge base the run builds.
+
+pub type LatMode {
+  // Every reader behaves as it did before the latent-effect rules.
+  Inactive
+  // The latent-effect rules are read.
+  Active
+}
+
 // Effect terms
 //
 // The lambda-calculus-with-union form of effects, whose ground normal form is
