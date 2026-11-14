@@ -854,8 +854,7 @@ fn installed_entries(manifest: Manifest) -> List(ManifestEntry) {
 }
 
 // The entry's package was found: its directory's `src/` walks, and holds a
-// Gleam module, unless the package is built by rebar3 or mix alone and may
-// hold none.
+// Gleam module unless Gleam builds the package with rebar3 or mix.
 fn is_located(local: LocalPackages, entry: ManifestEntry) -> Bool {
   let directory = case dict.get(local.packages, entry.name) {
     Ok(package) -> package.directory
@@ -863,17 +862,17 @@ fn is_located(local: LocalPackages, entry: ManifestEntry) -> Bool {
   }
   case config.source_files(filepath.join(directory, "src")) {
     Ok(files) ->
-      list.any(files, string.ends_with(_, ".gleam"))
-      || built_without_gleam(entry.build_tools)
+      list.any(files, string.ends_with(_, ".gleam")) || is_native(entry)
     Error(_) -> False
   }
 }
 
-// A `build_tools` list naming at least one tool, each of them rebar3 or mix.
-fn built_without_gleam(build_tools: Option(List(String))) -> Bool {
-  case build_tools {
-    Some([_, ..] as tools) ->
-      list.all(tools, fn(tool) { tool == "rebar3" || tool == "mix" })
-    Some([]) | None -> False
-  }
+// Whether Gleam builds the entry with rebar3 or mix: a hex entry whose
+// `build_tools` name no `"gleam"`, and name `"rebar"`, `"rebar3"` or `"mix"`.
+// Gleam ignores every other tool beside those.
+fn is_native(entry: ManifestEntry) -> Bool {
+  let tools = option.unwrap(entry.build_tools, [])
+  entry.source == "hex"
+  && !list.contains(tools, "gleam")
+  && list.any(tools, list.contains(["rebar", "rebar3", "mix"], _))
 }
