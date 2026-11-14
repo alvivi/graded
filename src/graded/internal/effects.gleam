@@ -196,6 +196,18 @@ pub fn lat_mode(knowledge_base: KnowledgeBase) -> types.LatMode {
   knowledge_base.lat_mode
 }
 
+// How a spec another package wrote is read: under which latent-effect rules,
+// and which of its `assume` lines those rules refuse once the run's signatures
+// and types are known. A refused line is replaced by `assume <path> : [_]`.
+pub type SpecReading {
+  SpecReading(mode: types.LatMode, refuses: fn(AssumeAnnotation) -> Bool)
+}
+
+// The reading without the latent-effect rules, which refuses nothing.
+pub fn inactive_reading() -> SpecReading {
+  SpecReading(mode: types.Inactive, refuses: fn(_) { False })
+}
+
 // The same knowledge base, read under `mode`.
 pub fn with_lat_mode(
   knowledge_base: KnowledgeBase,
@@ -220,17 +232,48 @@ pub fn load_project_catalog(
   catalog: List(CatalogFile),
   manifest_path: String,
 ) -> BundledCatalog {
-  load_project_catalog_with(catalog, manifest_path, types.Inactive)
+  load_project_catalog_with(catalog, manifest_path, inactive_reading())
 }
 
-// `load_project_catalog` under the given latent-effect reading.
+// `load_project_catalog` under the given reading.
 pub fn load_project_catalog_with(
   catalog: List(CatalogFile),
   manifest_path: String,
+  reading: SpecReading,
+) -> BundledCatalog {
+  read_parsed_catalog(
+    parse_project_catalog(catalog, manifest_path, reading.mode),
+    reading,
+  )
+}
+
+// The selected catalog files parsed, each by its package: everything of the
+// catalog that is read before any signature is known.
+pub opaque type ParsedCatalog {
+  ParsedCatalog(files: List(#(String, types.GradedFile)))
+}
+
+// The `catalog` files selected against `manifest_path`'s installed versions,
+// parsed under `mode`. A file that fails to read or parse is left out.
+pub fn parse_project_catalog(
+  catalog: List(CatalogFile),
+  manifest_path: String,
   mode: types.LatMode,
+) -> ParsedCatalog {
+  let installed_versions = manifest_versions(manifest_path)
+  ParsedCatalog(files: parse_catalog_files(
+    resolve_catalog_files(catalog, installed_versions),
+    mode,
+  ))
+}
+
+// A parsed catalog read under `reading`.
+pub fn read_parsed_catalog(
+  parsed: ParsedCatalog,
+  reading: SpecReading,
 ) -> BundledCatalog {
   let #(functions, modules, param_bounds, type_fields) =
-    load_catalog_with(catalog, manifest_path, mode)
+    read_catalog_files(parsed.files, reading)
   BundledCatalog(functions:, modules:, param_bounds:, type_fields:)
 }
 
@@ -244,19 +287,19 @@ pub fn knowledge_base_from_catalog(
     packages_directory,
     catalog,
     dependency_foreign,
-    types.Inactive,
+    inactive_reading(),
   )
 }
 
-// `knowledge_base_from_catalog` under the given latent-effect reading, which
-// the dependency specs are read under and the base carries.
+// `knowledge_base_from_catalog` under the given reading, which the dependency
+// specs are read under and whose latent-effect rules the base carries.
 pub fn knowledge_base_from_catalog_with(
   packages_directory: String,
   catalog: BundledCatalog,
   dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
-  mode: types.LatMode,
+  reading: SpecReading,
 ) -> KnowledgeBase {
-  let deps = load_dependencies(packages_directory, dependency_foreign, mode)
+  let deps = load_dependencies(packages_directory, dependency_foreign, reading)
   let BundledCatalog(
     functions: cat_effects,
     modules: cat_module_effects,
@@ -300,7 +343,7 @@ pub fn knowledge_base_from_catalog_with(
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
-    lat_mode: mode,
+    lat_mode: reading.mode,
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -2919,7 +2962,33 @@ pub type DepSpecLoad {
     // the rejected lines' blockers in rejected-line order.
     foreign: List(String),
     shipped: ShippedCode,
+    // The paths of the `assume` lines the reading refused once kinds were known,
+    // in file order.
+    refused: List(String),
   )
+}
+
+// The paths of a file's function `assume` lines the reading refuses, in file
+// order.
+fn refused_paths(file: types.GradedFile, reading: SpecReading) -> List(String) {
+  use <- bool.guard(when: reading.mode == types.Inactive, return: [])
+  annotation.extract_assumes(file)
+  |> list.filter(fn(assume) {
+    case assume.target {
+      FunctionAssume(_) -> reading.refuses(assume)
+      ModuleAssume -> False
+    }
+  })
+  |> list.filter_map(annotation.assume_qualified_name)
+  |> list.map(types.dotted_name)
+  |> list.unique
+}
+
+// The line standing in for each refused path: `assume <path> : [_]`.
+fn path_blockers(paths: List(String)) -> List(types.GradedLine) {
+  list.filter_map(paths, fn(path) {
+    annotation.blocker_for_path(path) |> option.to_result(Nil)
+  })
 }
 
 // Whether the package beside a loaded spec ships any Gleam module, read off its
@@ -2948,7 +3017,7 @@ pub fn describe_dep_spec_load(
       <> simplifile.describe_error(cause)
       <> "); it is read as shipping none",
     ]
-    SpecLoaded(rejected:, foreign:, shipped:, ..) ->
+    SpecLoaded(rejected:, foreign:, shipped:, refused:, ..) ->
       list.flatten([
         // Named by the line alone: a retired spelling's rewrite hint is a
         // second line, which would leave the sentence's tail dangling.
@@ -2972,6 +3041,13 @@ pub fn describe_dep_spec_load(
               <> source_dir
               <> ", so the package ships no code graded can match them to"
           },
+        ),
+        sampled_warning(
+          package_name,
+          refused,
+          #("line", "lines"),
+          "whose bounds the latent-effect rules refuse",
+          "each path is charged [_]",
         ),
       ])
   }
@@ -3049,19 +3125,19 @@ fn with_loaded_spec(load: DepSpecLoad, absent: a, read: fn(DepSpec) -> a) -> a {
 // types needs to resolve at a consumer's call site, or the `assume`
 // lines the dep author wrote for its FFI.
 pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpecLoad {
-  load_dep_spec_with(dep_root, package_name, types.Inactive)
+  load_dep_spec_with(dep_root, package_name, inactive_reading())
 }
 
-// `load_dep_spec` under the given latent-effect reading.
+// `load_dep_spec` under the given reading.
 pub fn load_dep_spec_with(
   dep_root: String,
   package_name: String,
-  mode: types.LatMode,
+  reading: SpecReading,
 ) -> DepSpecLoad {
   load_dep_spec_at_with(
     dep_root,
     config.spec_file_for(dep_root, package_name),
-    mode,
+    reading,
   )
 }
 
@@ -3082,14 +3158,16 @@ pub fn load_dep_spec_with(
 // package whose `src/` tree is missing, unreadable or holds no Gleam module
 // ships no module at all.
 pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
-  load_dep_spec_at_with(dep_root, spec_path, types.Inactive)
+  load_dep_spec_at_with(dep_root, spec_path, inactive_reading())
 }
 
-// `load_dep_spec_at` under the given latent-effect reading.
+// `load_dep_spec_at` under the given reading. A line the reading refuses is
+// rejected whole, as a line the parser rejects is: its path is charged the
+// wildcard from this dependency's own tier.
 pub fn load_dep_spec_at_with(
   dep_root: String,
   spec_path: String,
-  mode: types.LatMode,
+  reading: SpecReading,
 ) -> DepSpecLoad {
   case read_optional_file(spec_path) {
     Error(cause) -> SpecUnreadable(path: spec_path, cause:)
@@ -3098,13 +3176,16 @@ pub fn load_dep_spec_at_with(
       let source_dir = filepath.join(dep_root, "src")
       let modules = package_modules(source_dir)
       let #(parsed, rejected) =
-        annotation.parse_file_lenient_with(content, mode)
+        annotation.parse_file_lenient_with(content, reading.mode)
       let #(owned_lines, foreign_lines) = partition_owned(parsed.lines, modules)
       let owned = types.GradedFile(lines: owned_lines)
+      let refused = refused_paths(owned, reading)
       // Built against the owned lines alone: only an owned blanket shields a
       // rejected line.
       let #(blockers, foreign_blockers) =
-        rejected_blockers(owned, rejected) |> partition_owned(modules)
+        list.append(rejected_blockers(owned, rejected), path_blockers(refused))
+        |> list.unique
+        |> partition_owned(modules)
       SpecLoaded(
         spec: annotation.replace_lines_by_path(owned, blockers)
           |> dep_spec_from_file,
@@ -3114,6 +3195,7 @@ pub fn load_dep_spec_at_with(
           True -> ShipsNoModule(source_dir:)
           False -> ShipsModules
         },
+        refused:,
       )
     }
   }
@@ -3546,7 +3628,7 @@ type Dependencies {
 fn load_dependencies(
   packages_directory: String,
   foreign: Dict(QualifiedName, types.ForeignFunction),
-  mode: types.LatMode,
+  reading: SpecReading,
 ) -> Dependencies {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) ->
@@ -3561,7 +3643,7 @@ fn load_dependencies(
     fn(acc, package_name) {
       let origin = DependencySpec(package: package_name)
       let dep_root = packages_directory <> "/" <> package_name
-      let load = load_dep_spec_with(dep_root, package_name, mode)
+      let load = load_dep_spec_with(dep_root, package_name, reading)
       warn_dep_spec_load(package_name, load)
       use spec <- with_loaded_spec(load, acc)
       let dep = sanitize_dep_spec(spec, foreign)
@@ -3653,27 +3735,60 @@ pub fn load_catalog(
   Dict(QualifiedName, List(ParamBound)),
   List(#(FieldAnnotation, LookupOrigin)),
 ) {
-  load_catalog_with(catalog, manifest_path, types.Inactive)
+  load_catalog_with(catalog, manifest_path, inactive_reading())
 }
 
-// `load_catalog` under the given latent-effect reading.
+// `load_catalog` under the given reading. A line the reading refuses is
+// replaced by `assume <path> : [_]`.
 pub fn load_catalog_with(
   catalog: List(CatalogFile),
   manifest_path: String,
-  mode: types.LatMode,
+  reading: SpecReading,
 ) -> #(
   Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
   Dict(String, #(EffectTerm, LookupOrigin)),
   Dict(QualifiedName, List(ParamBound)),
   List(#(FieldAnnotation, LookupOrigin)),
 ) {
-  let installed_versions = manifest_versions(manifest_path)
-  let selected = resolve_catalog_files(catalog, installed_versions)
+  resolve_catalog_files(catalog, manifest_versions(manifest_path))
+  |> parse_catalog_files(reading.mode)
+  |> read_catalog_files(reading)
+}
+
+// Each selected file — its package and path — parsed under `mode`; one that
+// fails to read or parse is left out.
+fn parse_catalog_files(
+  selected: List(#(String, String)),
+  mode: types.LatMode,
+) -> List(#(String, types.GradedFile)) {
+  list.filter_map(selected, fn(entry) {
+    let #(package, file_path) = entry
+    use content <- result.try(
+      simplifile.read(file_path) |> result.replace_error(Nil),
+    )
+    use graded_file <- result.map(
+      annotation.parse_catalog_with(content, mode)
+      |> result.replace_error(Nil),
+    )
+    #(package, graded_file)
+  })
+}
+
+// The selected catalog files, read under `reading`.
+fn read_catalog_files(
+  selected: List(#(String, types.GradedFile)),
+  reading: SpecReading,
+) -> #(
+  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  Dict(String, #(EffectTerm, LookupOrigin)),
+  Dict(QualifiedName, List(ParamBound)),
+  List(#(FieldAnnotation, LookupOrigin)),
+) {
   let initial =
     CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), dict.new(), [])
   let acc =
     list.fold(selected, initial, fn(acc, entry) {
-      fold_catalog_file(acc, entry, mode)
+      fold_catalog_file(acc, entry, reading)
     })
   // Across files, an `effects` annotation takes precedence over another
   // package's per-function `assume` marker; within one file the reader has
@@ -3689,67 +3804,62 @@ pub fn load_catalog_with(
   )
 }
 
-// Fold one selected catalog file — its package name and path — into the
-// accumulator. `assume` lines feed module-level pure markers and
-// specific function effects; `effects` lines with param bounds feed polymorphic
+// Fold one selected catalog file — its package name and parsed lines — into
+// the accumulator. `assume` lines feed module-level pure markers and specific
+// function effects; `effects` lines with param bounds feed polymorphic
 // higher-order entries. Both kinds of function entry are tagged
-// `Catalog(package)`. Files that fail to read or parse are silently skipped.
+// `Catalog(package)`.
 fn fold_catalog_file(
   acc: CatalogAcc,
-  entry: #(String, String),
-  mode: types.LatMode,
+  entry: #(String, types.GradedFile),
+  reading: SpecReading,
 ) -> CatalogAcc {
-  let #(package, file_path) = entry
-  case simplifile.read(file_path) {
-    Error(_) -> acc
-    Ok(content) ->
-      case annotation.parse_file_with(content, mode) {
-        Error(_) -> acc
-        Ok(graded_file) -> {
-          let origin = Catalog(package:)
-          let assumes = annotation.extract_assumes(graded_file)
-          let #(function_assumes, module_assumes) =
-            split_assumes(assumes, origin)
-          // Same two readers as a package's own spec and as `load_dep_spec`, so
-          // a catalog entry's `check` budgets and externally-declared functions
-          // are scoped like everyone else's. Merging with the new file second
-          // keeps the later file winning on a clash, as folding per-annotation
-          // did.
-          let file_poly_effects =
-            load_spec_effects_from_file(graded_file)
-            |> with_origin(origin)
-          CatalogAcc(
-            assume_effects: dict.merge(acc.assume_effects, function_assumes),
-            module_effects: dict.merge(acc.module_effects, module_assumes),
-            poly_effects: dict.merge(acc.poly_effects, file_poly_effects),
-            // An external's bounds come off its own line — empty for the
-            // common ground declaration, and the written list for a
-            // polymorphic one — keyed by the same last-wins fold as the term,
-            // so the line whose term wins a name is the line whose bounds
-            // pair with it.
-            assume_params: dict.merge(acc.assume_params, assume_bounds(assumes)),
-            poly_params: dict.merge(
-              acc.poly_params,
-              // A catalog entry describes a package graded has no source for,
-              // so none of its externals can be stale by the visible-body rule.
-              // Kept only for the names this file's `effects` lines supply a
-              // term for; an external's own bounds are in `assume_params`,
-              // beside its term.
-              load_spec_params_from_file(graded_file)
-                |> dict.filter(fn(name, _bounds) {
-                  dict.has_key(file_poly_effects, name)
-                }),
-            ),
-            type_fields: list.append(
-              acc.type_fields,
-              list.map(annotation.extract_type_fields(graded_file), fn(field) {
-                #(field, origin)
-              }),
-            ),
-          )
-        }
-      }
-  }
+  let #(package, graded_file) = entry
+  let graded_file =
+    annotation.replace_lines_by_path(
+      graded_file,
+      path_blockers(refused_paths(graded_file, reading)),
+    )
+  let origin = Catalog(package:)
+  let assumes = annotation.extract_assumes(graded_file)
+  let #(function_assumes, module_assumes) = split_assumes(assumes, origin)
+  // Same two readers as a package's own spec and as `load_dep_spec`, so
+  // a catalog entry's `check` budgets and externally-declared functions
+  // are scoped like everyone else's. Merging with the new file second
+  // keeps the later file winning on a clash, as folding per-annotation
+  // did.
+  let file_poly_effects =
+    load_spec_effects_from_file(graded_file)
+    |> with_origin(origin)
+  CatalogAcc(
+    assume_effects: dict.merge(acc.assume_effects, function_assumes),
+    module_effects: dict.merge(acc.module_effects, module_assumes),
+    poly_effects: dict.merge(acc.poly_effects, file_poly_effects),
+    // An external's bounds come off its own line — empty for the
+    // common ground declaration, and the written list for a
+    // polymorphic one — keyed by the same last-wins fold as the term,
+    // so the line whose term wins a name is the line whose bounds
+    // pair with it.
+    assume_params: dict.merge(acc.assume_params, assume_bounds(assumes)),
+    poly_params: dict.merge(
+      acc.poly_params,
+      // A catalog entry describes a package graded has no source for,
+      // so none of its externals can be stale by the visible-body rule.
+      // Kept only for the names this file's `effects` lines supply a
+      // term for; an external's own bounds are in `assume_params`,
+      // beside its term.
+      load_spec_params_from_file(graded_file)
+        |> dict.filter(fn(name, _bounds) {
+          dict.has_key(file_poly_effects, name)
+        }),
+    ),
+    type_fields: list.append(
+      acc.type_fields,
+      list.map(annotation.extract_type_fields(graded_file), fn(field) {
+        #(field, origin)
+      }),
+    ),
+  )
 }
 
 // One bundled catalog file, as its `{package}@{version}.graded` name reads. The

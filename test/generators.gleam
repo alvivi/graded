@@ -312,7 +312,14 @@ pub fn external_gen() -> qcheck.Generator(types.AssumeAnnotation) {
   })
   use clauses <- qcheck.map(clauses_gen)
   let #(effects, returns) = clauses
-  AssumeAnnotation(module:, target:, params:, effects:, returns:)
+  AssumeAnnotation(
+    module:,
+    target:,
+    params:,
+    effects:,
+    returns:,
+    contract: types.no_contract,
+  )
 }
 
 // One clause this version does not read. The keys cover the dotted and numeric
@@ -536,5 +543,77 @@ fn build_provenance_program(
     traced: common <> helper(body) <> caller,
     untraced: common <> relay <> helper("relay(" <> body <> ")") <> caller,
     label:,
+  )
+}
+
+// A function `assume` line read under the latent-effect rules: a callback
+// bound `f: [f]`, carried bounds `values: [l]` and `decoder: [d]`, and a
+// contract over them that the rules accept — every clause names the line's
+// own variables, no carried variable is charged by the effect term, and a
+// `.returns` suffix appears in `carries` alone.
+pub fn latent_assume_gen() -> qcheck.Generator(types.AssumeAnnotation) {
+  let flag = qcheck.from_generators(qcheck.return(False), [qcheck.return(True)])
+  use with_callback <- qcheck.bind(flag)
+  use with_decoder <- qcheck.bind(flag)
+  let callback = case with_callback {
+    True -> [ParamBound(name: "f", effects: TVar("f"))]
+    False -> []
+  }
+  let decoder = case with_decoder {
+    True -> [ParamBound(name: "decoder", effects: TVar("d"))]
+    False -> []
+  }
+  let params =
+    list.flatten([
+      [ParamBound(name: "values", effects: TVar("l"))],
+      callback,
+      decoder,
+    ])
+  let carried = case with_decoder {
+    True -> ["l", "d"]
+    False -> ["l"]
+  }
+  let runs_gen =
+    qcheck.from_generators(qcheck.return(None), [
+      qcheck.return(Some([])),
+      qcheck.return(Some(["l"])),
+      qcheck.return(Some(carried)),
+    ])
+  let relay_gen = case with_callback {
+    False -> qcheck.return([])
+    True ->
+      qcheck.from_generators(qcheck.return([]), [
+        qcheck.return([types.Relay(callback: "f", positions: [Some("l")])]),
+        qcheck.return([types.Relay(callback: "f", positions: [None, Some("l")])]),
+      ])
+  }
+  let carried_terms = case with_callback {
+    True -> [TVar("f"), TVar("f.returns"), ..list.map(carried, TVar)]
+    False -> list.map(carried, TVar)
+  }
+  let carries_gen =
+    qcheck.from_generators(qcheck.return(None), [
+      qcheck.return(Some(effect_term.normalize(TUnion(carried_terms)))),
+      qcheck.return(Some(TLabels(set.from_list(["Http"])))),
+    ])
+  let term_gen = case with_callback {
+    True ->
+      qcheck.from_generators(qcheck.return(TLabels(set.new())), [
+        qcheck.return(TVar("f")),
+        qcheck.return(TApp(TVar("f"), TLabels(set.new()))),
+      ])
+    False -> qcheck.return(TLabels(set.from_list(["Dom"])))
+  }
+  use runs <- qcheck.bind(runs_gen)
+  use relays <- qcheck.bind(relay_gen)
+  use carries <- qcheck.bind(carries_gen)
+  use effects <- qcheck.map(term_gen)
+  AssumeAnnotation(
+    module: "app/ffi",
+    target: FunctionAssume("run"),
+    params:,
+    effects: Some(effects),
+    returns: None,
+    contract: types.LatentContract(runs:, relays:, carries:),
   )
 }

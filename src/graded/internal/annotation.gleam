@@ -70,12 +70,16 @@ pub fn describe_parse_error_line(error: ParseError) -> String {
 // back, or a word of prose — keys nothing, and a path the shape rule refuses is
 // one no line could have declared for either.
 pub fn blocker_for_rejected(error: ParseError) -> Option(GradedLine) {
-  use path <- option.then(rejected_path(error))
+  option.then(rejected_path(error), blocker_for_path)
+}
+
+// The line that stands in for a line refused by name: `assume <path> : [_]`.
+pub fn blocker_for_path(path: String) -> Option(GradedLine) {
   case
     parse_structured_line(
       "assume " <> path <> " : [_]",
-      error.line_number,
-      types.Inactive,
+      0,
+      ParseOptions(mode: types.Inactive, reading: RejectMalformed),
     )
   {
     Ok(line) -> Some(line)
@@ -83,18 +87,54 @@ pub fn blocker_for_rejected(error: ParseError) -> Option(GradedLine) {
   }
 }
 
-// The path a rejected line names: the first token after the line's keyword,
-// cut at the `(` opening a bound list and at the `:` opening an effects
-// clause. `None` for a line no keyword opens, and for a `check`.
+// The physical line number of the statement whose path is `path`, with its
+// text as written: the first statement of `keyword` naming it. For a message
+// that points at a line the parser read but the rules refused once kinds were
+// known.
+pub fn statement_at(
+  input: String,
+  keyword: String,
+  path: String,
+) -> Option(#(Int, String)) {
+  input
+  |> physical_lines()
+  |> join_continuations()
+  |> list.find_map(fn(element) {
+    use #(line_number, line) <- result.try(result.replace_error(element, Nil))
+    case string.trim(line) {
+      "" -> Error(Nil)
+      trimmed ->
+        case string.split_once(trimmed, " ") {
+          Ok(#(word, rest)) if word == keyword ->
+            case statement_path(rest) == path {
+              True -> Ok(#(line_number, trimmed))
+              False -> Error(Nil)
+            }
+          _ -> Error(Nil)
+        }
+    }
+  })
+  |> option.from_result
+}
+
+// The path a rejected line names. `None` for a line no keyword opens, and for
+// a `check`.
 fn rejected_path(error: ParseError) -> Option(String) {
   use #(keyword, rest) <- option.then(
     leading_keyword(string.trim(error.content)),
   )
   use <- bool.guard(when: !keyword_declares(keyword), return: None)
-  case rest |> string.trim() |> cut_at(" ") |> cut_at("(") |> cut_at(":") {
+  case statement_path(rest) {
     "" -> None
     path -> Some(path)
   }
+}
+
+// The path a statement names, read off the text after its keyword: the first
+// token, cut at the `(` opening a bound list and at the `:` opening an effects
+// clause.
+fn statement_path(rest: String) -> String {
+  rest |> string.trim() |> cut_at(" ") |> cut_at("(") |> cut_at(":")
 }
 
 // Whether a keyword opens a line that answers for the path's own effects,
@@ -179,15 +219,49 @@ pub fn parse_file_with(
   input: String,
   mode: types.LatMode,
 ) -> Result(GradedFile, ParseError) {
+  parse_whole(input, ParseOptions(mode:, reading: RejectMalformed))
+}
+
+// A bundled catalog file under the given latent-effect reading: refused whole
+// on a line it cannot read, like `parse_file`, except that a recognized
+// latent-effect clause it cannot read leaves its line saying nothing about
+// function values rather than refusing the file.
+pub fn parse_catalog_with(
+  input: String,
+  mode: types.LatMode,
+) -> Result(GradedFile, ParseError) {
+  parse_whole(input, ParseOptions(mode:, reading: IgnoreMalformed))
+}
+
+fn parse_whole(
+  input: String,
+  options: ParseOptions,
+) -> Result(GradedFile, ParseError) {
   use logical <- result.try(
     input |> physical_lines() |> join_continuations() |> result.all(),
   )
   logical
   |> list.try_map(fn(pair) {
     let #(line_number, line) = pair
-    parse_structured_line(line, line_number, mode)
+    parse_structured_line(line, line_number, options)
   })
   |> result.map(fn(lines) { GradedFile(lines:) })
+}
+
+// What a parse reads: whether the latent-effect clauses are read, and what a
+// recognized one that cannot be read costs.
+type ParseOptions {
+  ParseOptions(mode: types.LatMode, reading: ClauseReading)
+}
+
+// How a reader takes a latent-effect clause it recognizes and cannot read.
+type ClauseReading {
+  // The reader owns the file: the line is refused.
+  RejectMalformed
+  // The reader cannot fix the file: the line keeps everything else it says and
+  // says nothing about function values, so every argument it is given may run
+  // and its result is undescribed.
+  IgnoreMalformed
 }
 
 // The same read, one statement at a time: every statement this version can
@@ -214,7 +288,11 @@ pub fn parse_file_lenient_with(
     |> join_continuations()
     |> list.map(fn(element) {
       use #(line_number, line) <- result.try(element)
-      parse_structured_line(line, line_number, mode)
+      parse_structured_line(
+        line,
+        line_number,
+        ParseOptions(mode:, reading: IgnoreMalformed),
+      )
     })
   // `result.partition` hands both halves back in reverse.
   let #(lines, rejected) = result.partition(read)
@@ -384,7 +462,7 @@ fn leading_keyword(trimmed: String) -> Option(#(LeadingKeyword, String)) {
 fn parse_structured_line(
   line: String,
   line_number: Int,
-  mode: types.LatMode,
+  options: ParseOptions,
 ) -> Result(GradedLine, ParseError) {
   let trimmed = string.trim(line)
   case trimmed {
@@ -394,9 +472,9 @@ fn parse_structured_line(
       case leading_keyword(trimmed) {
         None -> Error(InvalidLine(line_number, line))
         Some(#(LeadsEffects, _)) | Some(#(LeadsCheck, _)) ->
-          parse_annotation_line(trimmed, line_number, line, mode)
+          parse_annotation_line(trimmed, line_number, line, options)
         Some(#(LeadsAssume, rest)) ->
-          parse_assume_line(rest, mode)
+          parse_assume_line(rest, options)
           |> result.replace_error(InvalidLine(line_number, line))
         Some(#(LeadsRetired(keyword), _)) ->
           Error(RetiredSpelling(line_number, line, keyword))
@@ -408,7 +486,7 @@ fn parse_annotation_line(
   trimmed: String,
   line_number: Int,
   original: String,
-  mode: types.LatMode,
+  options: ParseOptions,
 ) -> Result(GradedLine, ParseError) {
   let #(kind, rest) = case trimmed {
     "effects " <> remaining -> #(Ok(Effects), remaining)
@@ -418,7 +496,7 @@ fn parse_annotation_line(
   case kind {
     Error(Nil) -> Error(InvalidLine(line_number, original))
     Ok(parsed_kind) ->
-      parse_annotation_rest(parsed_kind, rest, line_number, original, mode)
+      parse_annotation_rest(parsed_kind, rest, line_number, original, options)
   }
 }
 
@@ -427,14 +505,16 @@ fn parse_annotation_rest(
   rest: String,
   line_number: Int,
   original: String,
-  mode: types.LatMode,
+  options: ParseOptions,
 ) -> Result(GradedLine, ParseError) {
   // The clause region comes off first: `parse_name_colon_effects` splits on the
   // first colon, so a name-first read would take `m.f where returns` for the
   // function name.
-  parse_clause_then(rest, mode, fn(head, returns, unknown_clauses) {
-    parse_annotation_head(kind, head, returns)
-    |> result.map(AnnotationLine(_, unknown_clauses))
+  parse_clause_then(rest, options.mode, fn(head, region) {
+    // An `effects` or `check` line states no latent-effect clause.
+    use <- bool.guard(when: region.latent != [], return: Error(Nil))
+    parse_annotation_head(kind, head, region.returns)
+    |> result.map(AnnotationLine(_, region.unknown))
   })
   |> result.replace_error(InvalidLine(line_number, original))
 }
@@ -445,15 +525,25 @@ fn parse_annotation_rest(
 fn parse_clause_then(
   rest: String,
   mode: types.LatMode,
-  parse_head: fn(String, Option(EffectTerm), List(UnknownClause)) ->
-    Result(a, Nil),
+  parse_head: fn(String, ClauseRegion) -> Result(a, Nil),
 ) -> Result(a, Nil) {
   use #(head, region) <- result.try(split_clause_region(rest))
-  use #(returns, unknown_clauses) <- result.try(case region {
-    None -> Ok(#(None, []))
+  use region <- result.try(case region {
+    None -> Ok(ClauseRegion(returns: None, latent: [], unknown: []))
     Some(text) -> parse_clause_list(text, mode)
   })
-  parse_head(head, returns, unknown_clauses)
+  parse_head(head, region)
+}
+
+// A statement's `where` region, read: the `returns` operator, the
+// latent-effect clauses as written (read only under the latent-effect rules),
+// and the clauses this version retains without reading.
+type ClauseRegion {
+  ClauseRegion(
+    returns: Option(EffectTerm),
+    latent: List(#(String, String)),
+    unknown: List(UnknownClause),
+  )
 }
 
 // Read a clause region into the one key this version knows and the entries it
@@ -462,13 +552,20 @@ fn parse_clause_then(
 // its own key may repeat.
 fn parse_clause_list(
   region: String,
-  _mode: types.LatMode,
-) -> Result(#(Option(EffectTerm), List(UnknownClause)), Nil) {
+  mode: types.LatMode,
+) -> Result(ClauseRegion, Nil) {
   use entries <- result.try(
     region |> split_top_level_commas() |> list.try_map(parse_clause_entry),
   )
-  let #(known, unknown) =
+  let #(known, rest) =
     list.partition(entries, fn(entry) { entry.0 == returns_clause_key })
+  let #(latent, unknown) =
+    list.partition(rest, fn(entry) {
+      case mode {
+        types.Active -> list.contains(latent_clause_keys, entry.0)
+        types.Inactive -> False
+      }
+    })
   use returns <- result.try(case known {
     [] -> Ok(None)
     [#(_, payload)] -> parse_bound_effect(payload) |> result.map(Some)
@@ -476,12 +573,205 @@ fn parse_clause_list(
     // last-wins.
     _ -> Error(Nil)
   })
-  Ok(#(
-    returns,
-    list.map(unknown, fn(entry) {
+  Ok(ClauseRegion(
+    returns:,
+    latent:,
+    unknown: list.map(unknown, fn(entry) {
       UnknownClause(key: entry.0, payload: entry.1)
     }),
   ))
+}
+
+// The keys of the latent-effect clauses.
+const runs_clause_key = "runs"
+
+const relay_clause_key = "relay"
+
+const carries_clause_key = "carries"
+
+const latent_clause_keys = [
+  runs_clause_key,
+  relay_clause_key,
+  carries_clause_key,
+]
+
+// Why a line's latent-effect clauses could not be read.
+type ContractFault {
+  // A clause that does not spell its grammar, names a variable outside the
+  // line's own bound list, or repeats a clause that has one slot.
+  MalformedClause
+  // A use the rules forbid: a carried variable charged by the line's own
+  // effect term, or what a callback's result carries named outside a
+  // `carries` clause. The whole line is refused, whoever reads it.
+  ForbiddenUse
+}
+
+// Read a function line's latent-effect clauses against its bound list, its
+// effect term and its `returns` operator. Every variable a clause names is
+// one of the line's own bound variables; a `.returns` suffix is read in
+// `carries` alone.
+fn read_contract(
+  entries: List(#(String, String)),
+  params: List(ParamBound),
+  term: Option(EffectTerm),
+  returns: Option(EffectTerm),
+) -> Result(types.LatentContract, ContractFault) {
+  use contract <- result.try(
+    list.try_fold(entries, types.no_contract, read_contract_clause)
+    |> result.replace_error(MalformedClause),
+  )
+  let scope =
+    list.fold(params, set.new(), fn(acc, param) {
+      set.union(acc, effect_term.free_vars(param.effects))
+    })
+  let charged =
+    [term, returns]
+    |> option.values
+    |> list.fold(set.new(), fn(acc, charged) {
+      set.union(acc, effect_term.free_vars(charged))
+    })
+  let carried = carried_variables(contract)
+  let names_a_result = fn(variable) {
+    string.ends_with(variable, types.returns_suffix)
+  }
+  use <- bool.guard(
+    when: list.any(params, fn(param) { names_a_result(param.name) })
+      || set.to_list(scope) |> list.any(names_a_result)
+      || set.to_list(charged) |> list.any(names_a_result)
+      || !set.is_empty(set.intersection(charged, carried)),
+    return: Error(ForbiddenUse),
+  )
+  let in_scope = fn(variable) { set.contains(scope, variable) }
+  let carries_in_scope = fn(variable) {
+    in_scope(variable)
+    || {
+      names_a_result(variable)
+      && in_scope(string.drop_end(variable, string.length(types.returns_suffix)))
+    }
+  }
+  let well_scoped =
+    list.all(option.unwrap(contract.runs, []), in_scope)
+    && list.all(contract.relays, fn(relay) {
+      in_scope(relay.callback)
+      && list.all(option.values(relay.positions), in_scope)
+    })
+    && case contract.carries {
+      None -> True
+      Some(carried) ->
+        effect_term.free_vars(carried)
+        |> set.to_list
+        |> list.all(carries_in_scope)
+    }
+  case well_scoped {
+    True -> Ok(contract)
+    False -> Error(MalformedClause)
+  }
+}
+
+// The variables a contract names as carried: every `runs` entry and every
+// variable a `relay` maps to a callback position.
+fn carried_variables(contract: types.LatentContract) -> set.Set(String) {
+  list.fold(
+    contract.relays,
+    set.from_list(option.unwrap(contract.runs, [])),
+    fn(acc, relay) {
+      set.union(acc, set.from_list(option.values(relay.positions)))
+    },
+  )
+}
+
+// One latent-effect clause read into the contract built so far. `Error(Nil)`
+// where its payload does not spell the clause's grammar, or the clause repeats
+// one that has a single slot.
+fn read_contract_clause(
+  contract: types.LatentContract,
+  entry: #(String, String),
+) -> Result(types.LatentContract, Nil) {
+  let #(key, payload) = entry
+  case key {
+    _ if key == runs_clause_key -> {
+      use <- bool.guard(when: contract.runs != None, return: Error(Nil))
+      use variables <- result.map(variable_list(payload))
+      types.LatentContract(..contract, runs: Some(variables))
+    }
+    _ if key == relay_clause_key -> {
+      use relay <- result.try(read_relay(payload))
+      use <- bool.guard(
+        when: list.any(contract.relays, fn(other) {
+          other.callback == relay.callback
+        }),
+        return: Error(Nil),
+      )
+      Ok(
+        types.LatentContract(
+          ..contract,
+          relays: list.append(contract.relays, [relay]),
+        ),
+      )
+    }
+    _ -> {
+      use <- bool.guard(when: contract.carries != None, return: Error(Nil))
+      use carried <- result.map(parse_effect_term(payload))
+      types.LatentContract(..contract, carries: Some(carried))
+    }
+  }
+}
+
+// `[v, w]`: a bracketed list of variables, possibly empty.
+fn variable_list(payload: String) -> Result(List(String), Nil) {
+  let trimmed = string.trim(payload)
+  use <- bool.guard(
+    when: !{
+      string.starts_with(trimmed, "[") && string.ends_with(trimmed, "]")
+    },
+    return: Error(Nil),
+  )
+  case trimmed |> string.drop_start(1) |> string.drop_end(1) |> string.trim {
+    "" -> Ok([])
+    inner ->
+      inner
+      |> string.split(",")
+      |> list.map(string.trim)
+      |> list.try_map(fn(token) {
+        case is_variable_token(token) {
+          True -> Ok(token)
+          False -> Error(Nil)
+        }
+      })
+  }
+}
+
+// `f(l, _)`: a callback variable and, per position, a variable or `_`.
+fn read_relay(payload: String) -> Result(types.Relay, Nil) {
+  use #(callee, rest) <- result.try(string.split_once(string.trim(payload), "("))
+  let callback = string.trim(callee)
+  use <- bool.guard(
+    when: !is_variable_token(callback) || !string.ends_with(rest, ")"),
+    return: Error(Nil),
+  )
+  use positions <- result.map(case string.trim(string.drop_end(rest, 1)) {
+    "" -> Ok([])
+    inner ->
+      inner
+      |> string.split(",")
+      |> list.map(string.trim)
+      |> list.try_map(fn(token) {
+        case token, is_variable_token(token) {
+          "_", _ -> Ok(None)
+          _, True -> Ok(Some(token))
+          _, False -> Error(Nil)
+        }
+      })
+  })
+  types.Relay(callback:, positions:)
+}
+
+// Whether a token spells a variable: an identifier that is not a label.
+fn is_variable_token(token: String) -> Bool {
+  is_identifier_token(token)
+  && token != "_"
+  && !types.is_upper_initial(token)
+  && !string.contains(token, ",")
 }
 
 // Split one clause entry into its key and its payload at the entry's first
@@ -681,19 +971,64 @@ type AssumeSubject {
 // as written.
 fn parse_assume_line(
   rest: String,
-  mode: types.LatMode,
+  options: ParseOptions,
 ) -> Result(GradedLine, Nil) {
-  parse_clause_then(rest, mode, parse_assume_head)
+  parse_clause_then(rest, options.mode, fn(head, region) {
+    parse_assume_head(head, region, options.reading)
+  })
 }
 
 fn parse_assume_head(
   head: String,
-  returns: Option(EffectTerm),
-  unknown_clauses: List(UnknownClause),
+  region: ClauseRegion,
+  reading: ClauseReading,
 ) -> Result(GradedLine, Nil) {
-  use split <- result.try(split_assume_head(head, returns, unknown_clauses))
+  let ClauseRegion(returns:, latent:, unknown: unknown_clauses) = region
+  use split <- result.try(split_assume_head(
+    head,
+    returns,
+    unknown_clauses,
+    latent,
+  ))
   let AssumeHead(path:, bounds:, term:) = split
   use subject <- result.try(split_assume_path(path))
+  // A latent-effect clause speaks of a function's arguments and result, so
+  // only a function path has a slot for one.
+  use <- bool.guard(
+    when: latent != []
+      && {
+      case subject {
+        AssumeFunction(..) -> False
+        AssumeModule(..) | AssumeField(..) -> True
+      }
+    },
+    return: Error(Nil),
+  )
+  let params = case bounds {
+    ParsedBounds(params) -> params
+    NoBounds | RetainedBounds(_) -> []
+  }
+  use #(contract, unknown_clauses) <- result.try(case latent {
+    [] -> Ok(#(types.no_contract, unknown_clauses))
+    _ ->
+      case read_contract(latent, params, term, returns), reading {
+        Ok(contract), _ -> Ok(#(contract, unknown_clauses))
+        Error(ForbiddenUse), _ | Error(MalformedClause), RejectMalformed ->
+          Error(Nil)
+        // Read as saying nothing about function values. The clauses stay on
+        // the line as written, unread.
+        Error(MalformedClause), IgnoreMalformed ->
+          Ok(#(
+            types.no_contract,
+            list.append(
+              unknown_clauses,
+              list.map(latent, fn(entry) {
+                UnknownClause(key: entry.0, payload: entry.1)
+              }),
+            ),
+          ))
+      }
+  })
   // A bound list attaches to a function path alone: a module has no
   // parameters, and a field's callable shape is not per-parameter. Refused
   // loudly rather than linted — a paren group on either path (empty included,
@@ -709,7 +1044,7 @@ fn parse_assume_head(
     return: Error(Nil),
   )
   let effects = option.map(term, effect_term.ground_root_abstractions)
-  case term, returns {
+  case term, returns, contract == types.no_contract {
     // Nothing on the line means anything to this version, so there is no
     // semantic record to hang the retained clauses on — and fabricating an
     // empty effect set for one would turn *keys nothing* into *is pure*. The
@@ -717,8 +1052,8 @@ fn parse_assume_head(
     // than retained. A bound list is part of the retained path text — a line
     // that keys nothing gives it no semantics — so the retained spelling
     // keeps it. Parsed bounds cannot reach this branch: they are built only
-    // beside a term or a `returns` clause.
-    None, None ->
+    // beside a term, a `returns` clause or a latent-effect clause.
+    None, None, True ->
       Ok(RetainedAssumeLine(
         path: case bounds {
           RetainedBounds(written:) -> written
@@ -726,7 +1061,7 @@ fn parse_assume_head(
         },
         unknown_clauses:,
       ))
-    _, _ ->
+    _, _, _ ->
       case subject {
         AssumeModule(module:) ->
           Ok(AssumeLine(
@@ -736,6 +1071,7 @@ fn parse_assume_head(
               params: [],
               effects:,
               returns:,
+              contract: types.no_contract,
             ),
             unknown_clauses,
           ))
@@ -744,12 +1080,10 @@ fn parse_assume_head(
             AssumeAnnotation(
               module:,
               target: FunctionAssume(function),
-              params: case bounds {
-                ParsedBounds(params) -> params
-                NoBounds | RetainedBounds(_) -> []
-              },
+              params:,
               effects:,
               returns:,
+              contract:,
             ),
             unknown_clauses,
           ))
@@ -798,10 +1132,11 @@ fn split_assume_head(
   head: String,
   returns: Option(EffectTerm),
   unknown_clauses: List(UnknownClause),
+  latent: List(#(String, String)),
 ) -> Result(AssumeHead, Nil) {
   // A path with no effects clause claims nothing unless a `where` region rides
   // the line, bounded and boundless spellings alike.
-  let claims_nothing = returns == None && unknown_clauses == []
+  let claims_nothing = returns == None && unknown_clauses == [] && latent == []
   let bounded = bounded_spelling(head)
   case split_call(head) {
     Ok(#(name, params_str, suffix)) if bounded -> {
@@ -814,7 +1149,10 @@ fn split_assume_head(
       // claim of this version's, and bounds beside one are its semantics,
       // parsed as ever.
       let retained_only =
-        returns == None && unknown_clauses != [] && string.trim(suffix) == ""
+        returns == None
+        && latent == []
+        && unknown_clauses != []
+        && string.trim(suffix) == ""
       use <- bool.lazy_guard(when: retained_only, return: fn() {
         Ok(AssumeHead(
           path:,
@@ -1169,7 +1507,7 @@ pub fn line_path(line: GradedLine) -> Result(String, Nil) {
   case line {
     AnnotationLine(annotation, _) -> Ok(annotation.function)
     FieldAssumeLine(tf, _) -> Ok(type_field_path(tf))
-    AssumeLine(ext, _) -> Ok(assume_sort_key(ext))
+    AssumeLine(ext, _) -> Ok(assume_name(ext))
     RetainedAssumeLine(path:, ..) -> Ok(retained_bare_path(path))
     CommentLine(_) | BlankLine -> Error(Nil)
   }
@@ -1615,9 +1953,15 @@ fn surviving_assume(
         True -> None
         False -> assume.returns
       }
-      case effects, returns {
-        None, None -> Error(Nil)
-        _, _ -> Ok(AssumeAnnotation(..assume, effects:, returns:))
+      // What the line says about function values is a declaration of the same
+      // function, and goes stale with its effects.
+      let contract = case set.contains(stale_assumes, name) {
+        True -> types.no_contract
+        False -> assume.contract
+      }
+      case effects, returns, contract == types.no_contract {
+        None, None, True -> Error(Nil)
+        _, _, _ -> Ok(AssumeAnnotation(..assume, effects:, returns:, contract:))
       }
     }
   }
@@ -1627,7 +1971,7 @@ fn surviving_assume(
 // a module-level one.
 fn assume_line_name(assume: AssumeAnnotation) -> Result(String, Nil) {
   case assume.target {
-    FunctionAssume(_) -> Ok(assume_sort_key(assume))
+    FunctionAssume(_) -> Ok(assume_name(assume))
     ModuleAssume -> Error(Nil)
   }
 }
@@ -1707,19 +2051,19 @@ fn statement_parts(line: GradedLine) -> #(String, List(String)) {
   case line {
     AnnotationLine(annotation, unknown_clauses) -> #(
       annotation_head(annotation),
-      clause_list(annotation.returns, unknown_clauses),
+      clause_list(annotation.returns, types.no_contract, unknown_clauses),
     )
     FieldAssumeLine(tf, unknown_clauses) -> #(
       type_field_head(tf),
-      clause_list(None, unknown_clauses),
+      clause_list(None, types.no_contract, unknown_clauses),
     )
     AssumeLine(ext, unknown_clauses) -> #(
       assume_head(ext),
-      clause_list(ext.returns, unknown_clauses),
+      clause_list(ext.returns, ext.contract, unknown_clauses),
     )
     RetainedAssumeLine(path:, unknown_clauses:) -> #(
       "assume " <> path,
-      clause_list(None, unknown_clauses),
+      clause_list(None, types.no_contract, unknown_clauses),
     )
     CommentLine(text) -> #(text, [])
     BlankLine -> #("", [])
@@ -1731,25 +2075,56 @@ fn inline_statement(parts: #(String, List(String))) -> String {
   parts.0 <> clause_region(parts.1)
 }
 
-// The clauses of one statement, rendered: the known `returns` first, the
-// retained unknowns after in read order. A canonical order, so a file that
-// wrote them the other way round still formats idempotently.
+// The clauses of one statement, rendered: the known `returns` first, then
+// `runs`, every `relay` in the order read and `carries`, the retained unknowns
+// after in read order. A canonical order, so a file that wrote them the other
+// way round still formats idempotently.
 fn clause_list(
   returns: Option(EffectTerm),
+  contract: types.LatentContract,
   unknown_clauses: List(UnknownClause),
 ) -> List(String) {
   let known = case returns {
     Some(operator) -> [returns_clause_key <> " : " <> format_operator(operator)]
     None -> []
   }
-  list.append(
+  list.flatten([
     known,
+    contract_clauses(contract),
     // Verbatim between its delimiters: this version cannot canonically render a
     // grammar it does not know, so it must not reformat the interior.
     list.map(unknown_clauses, fn(clause) {
       clause.key <> " : " <> clause.payload
     }),
-  )
+  ])
+}
+
+// A contract's clauses, rendered in the canonical order.
+fn contract_clauses(contract: types.LatentContract) -> List(String) {
+  let runs = case contract.runs {
+    Some(variables) -> [
+      runs_clause_key <> " : [" <> string.join(variables, ", ") <> "]",
+    ]
+    None -> []
+  }
+  let relays =
+    list.map(contract.relays, fn(relay) {
+      relay_clause_key
+      <> " : "
+      <> relay.callback
+      <> "("
+      <> relay.positions
+      |> list.map(option.unwrap(_, "_"))
+      |> string.join(", ")
+      <> ")"
+    })
+  let carries = case contract.carries {
+    Some(carried) -> [
+      carries_clause_key <> " : " <> format_effect_term(carried),
+    ]
+    None -> []
+  }
+  list.flatten([runs, relays, carries])
 }
 
 // A statement's clause region on one line, or nothing where it carries none.
@@ -1997,13 +2372,13 @@ fn assume_head(assume_annotation: AssumeAnnotation) -> String {
 // rebuilds a `RetainedAssumeLine` from a semantic line and must keep the bounds
 // in the retained path.
 fn assume_path(assume_annotation: AssumeAnnotation) -> String {
-  assume_sort_key(assume_annotation) <> bound_list(assume_annotation.params)
+  assume_name(assume_annotation) <> bound_list(assume_annotation.params)
 }
 
 // The qualified name (`module` or `module.function`) an external annotation
-// targets. Used both as a sort key and as the rendered name in
-// `format_assume`.
-fn assume_sort_key(assume_annotation: AssumeAnnotation) -> String {
+// targets. Used as a sort key, as the rendered name in `format_assume`, and as
+// the path a message names the line by.
+pub fn assume_name(assume_annotation: AssumeAnnotation) -> String {
   case assume_qualified_name(assume_annotation) {
     Error(Nil) -> assume_annotation.module
     Ok(qualified) -> types.dotted_name(qualified)
@@ -2012,7 +2387,7 @@ fn assume_sort_key(assume_annotation: AssumeAnnotation) -> String {
 
 // The `QualifiedName` a per-function `assume` line targets, `Error(Nil)` for a
 // module-level one. The one place an external's module and function are put
-// back together, so every reader that keys by that name — and `assume_sort_key`,
+// back together, so every reader that keys by that name — and `assume_name`,
 // which renders it — agrees on the shape.
 pub fn assume_qualified_name(
   assume_annotation: AssumeAnnotation,

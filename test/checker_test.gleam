@@ -3312,6 +3312,7 @@ pub fn a_declared_operator_spelling_never_lifts_as_an_operator_test() {
       params: [],
       effects: Some(TAbs("x", TVar("x"))),
       returns: None,
+      contract: types.no_contract,
     )
   lifted_declaration_violations(raw) |> should.equal([])
 
@@ -4591,6 +4592,7 @@ fn simple_assume(
     params: [],
     effects: Some(TLabels(set.from_list(labels))),
     returns: None,
+    contract: types.no_contract,
   )
 }
 

@@ -31,14 +31,14 @@ import graded/internal/types.{
   ClassificationCheck, Compared, CompatibleWiredValue, DefinitionDropped,
   Disagree, DotlessReturnsClauseWarning, EffectAnnotation, Effects, Field,
   FieldArityViolation, FieldAssumeOrigin, FieldBoundList, FieldNotAnnotated,
-  FieldReturnsClause, FieldSiteViolation, FunctionSkipped, NoKnownEffects,
-  NoResolutionAtSpan, NoReturnAnnotation, NoTypedEvidence,
-  NonCallableFieldCheckWarning, NonCallableReturnViolation, NotACallTarget,
-  ParamBound, ProvedFieldCall, ProvedModuleCall, QualifiedName,
-  ReceiverNotNominal, ReceiverTypeUnknown, ReceiverTypeUnresolved,
-  RefusedDeclaredReturn, ResolutionMismatch, ReturnIsNotAFunction,
-  ReturnsClauseViolation, StaleFunctionAssumeWarning, StaleReturnsClauseWarning,
-  SyntaxModule, TUnion, TVar, TypeSelectedModule,
+  FieldReturnsClause, FieldSiteViolation, FunctionSkipped,
+  MeaninglessBoundWarning, NoKnownEffects, NoResolutionAtSpan,
+  NoReturnAnnotation, NoTypedEvidence, NonCallableFieldCheckWarning,
+  NonCallableReturnViolation, NotACallTarget, ParamBound, ProvedFieldCall,
+  ProvedModuleCall, QualifiedName, ReceiverNotNominal, ReceiverTypeUnknown,
+  ReceiverTypeUnresolved, RefusedDeclaredReturn, ResolutionMismatch,
+  ReturnIsNotAFunction, ReturnsClauseViolation, StaleFunctionAssumeWarning,
+  StaleReturnsClauseWarning, SyntaxModule, TUnion, TVar, TypeSelectedModule,
   UnboundAssumeTermVariableWarning, UnbuiltExternal, UncalledFactory,
   UnclosedReturnsClauseWarning, UnconstructedFieldCheckWarning, Undecided,
   UndecidedShadowed, UndeclaredExternal, UndeclaredForeignReturn,
@@ -1834,6 +1834,15 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> " on "
       <> function
       <> " names no parameter of the function — check the name"
+    MeaninglessBoundWarning(function:, param:) ->
+      file
+      <> ": warning: parameter bound "
+      <> param
+      <> " on "
+      <> function
+      <> " names nothing: "
+      <> param
+      <> " is not a callback, so its bound names what it carries, which takes a single variable"
     UnmatchedCheckWarning(function:) ->
       file
       <> ": warning: check "

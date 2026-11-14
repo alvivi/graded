@@ -448,6 +448,7 @@ pub fn format_external_test() {
       params: [],
       effects: Some(TLabels(set.from_list(["Http"]))),
       returns: None,
+      contract: types.no_contract,
     )
   annotation.format_assume(ext)
   |> should.equal("assume gleam/httpc.send : [Http]")
@@ -1234,6 +1235,7 @@ pub fn merge_inferred_drops_effect_for_external_test() {
           params: [],
           effects: Some(effect_term.pure()),
           returns: None,
+          contract: types.no_contract,
         ),
         [],
       ),
@@ -1377,6 +1379,7 @@ fn module_assume(module: String) -> types.GradedLine {
       params: [],
       effects: Some(effect_term.pure()),
       returns: None,
+      contract: types.no_contract,
     ),
     [],
   )
@@ -1390,6 +1393,7 @@ fn function_assume(module: String, function: String) -> types.GradedLine {
       params: [],
       effects: Some(effect_term.pure()),
       returns: None,
+      contract: types.no_contract,
     ),
     [],
   )
@@ -1442,6 +1446,7 @@ pub fn merge_inferred_composes_the_two_assume_channels_test() {
           params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
+          contract: types.no_contract,
         ),
         [],
       ),
@@ -1480,6 +1485,7 @@ pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
         params: [],
         effects: None,
         returns: Some(TLabels(set.from_list(["Net"]))),
+        contract: types.no_contract,
       ),
       [],
     )
@@ -1540,6 +1546,7 @@ pub fn merge_inferred_keeps_an_unmatched_returns_clause_test() {
           params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
+          contract: types.no_contract,
         ),
         [],
       ),
@@ -1561,6 +1568,7 @@ pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
           params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
+          contract: types.no_contract,
         ),
         [],
       ),
@@ -1609,6 +1617,7 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
           params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
+          contract: types.no_contract,
         ),
         [],
       ),
@@ -1667,6 +1676,7 @@ pub fn merge_inferred_keeps_bounds_on_a_stale_conversion_test() {
           params: [ParamBound("cb", TVar("cb"))],
           effects: Some(TVar("cb")),
           returns: None,
+          contract: types.no_contract,
         ),
         [UnknownClause(key: "future", payload: "[X]")],
       ),
@@ -1697,6 +1707,7 @@ pub fn a_bounded_external_still_suppresses_the_inferred_line_test() {
           params: [ParamBound("f", TVar("f"))],
           effects: Some(TVar("f")),
           returns: None,
+          contract: types.no_contract,
         ),
         [],
       ),
@@ -1725,6 +1736,7 @@ pub fn a_clause_only_bounded_line_does_not_suppress_the_inferred_line_test() {
         params: [ParamBound("cb", TVar("cb"))],
         effects: None,
         returns: Some(TVar("cb")),
+        contract: types.no_contract,
       ),
       [],
     )
@@ -2843,6 +2855,7 @@ pub fn a_rejected_declaration_blocks_the_path_it_names_test() {
             params: [],
             effects: Some(TTop),
             returns: None,
+            contract: types.no_contract,
           ),
           [],
         ),
@@ -2862,6 +2875,7 @@ pub fn a_blocker_takes_the_shape_of_the_path_it_names_test() {
           params: [],
           effects: Some(TTop),
           returns: None,
+          contract: types.no_contract,
         ),
         [],
       ),
@@ -2935,4 +2949,172 @@ fn wrapping_probe(width: Int) -> String {
 
 fn union_vars(first: EffectTerm, second: String) -> EffectTerm {
   effect_term.normalize(TUnion([first, TVar(second)]))
+}
+
+// Latent-effect clauses
+//
+// Under the latent-effect rules an `assume` line's `runs`, `relay` and
+// `carries` clauses are read into its contract, over the line's own bound
+// variables. Without them the same clauses are retained unread, as every
+// unknown clause is.
+
+fn parse_active(
+  input: String,
+) -> Result(types.GradedFile, annotation.ParseError) {
+  annotation.parse_file_with(input, types.Active)
+}
+
+fn active_assume(input: String) -> types.AssumeAnnotation {
+  let assert Ok(types.GradedFile(lines: [AssumeLine(assume, [])])) =
+    parse_active(input)
+  assume
+}
+
+pub fn latent_clauses_read_into_the_contract_test() {
+  let assume =
+    active_assume(
+      "assume app/ffi.run(values: [l], f: [f]) : [f] where runs : [l], relay : f(l), carries : [f, f.returns, l]",
+    )
+  assume.contract
+  |> should.equal(types.LatentContract(
+    runs: Some(["l"]),
+    relays: [types.Relay(callback: "f", positions: [Some("l")])],
+    carries: Some(
+      effect_term.normalize(TUnion([TVar("f"), TVar("f.returns"), TVar("l")])),
+    ),
+  ))
+}
+
+pub fn latent_clauses_stay_unread_without_the_rules_test() {
+  let assert Ok(types.GradedFile(lines: [AssumeLine(assume, clauses)])) =
+    annotation.parse_file(
+      "assume app/ffi.run(values: [l]) : [] where runs : [l], carries : [l]",
+    )
+  assume.contract |> should.equal(types.no_contract)
+  clauses
+  |> should.equal([
+    UnknownClause(key: "runs", payload: "[l]"),
+    UnknownClause(key: "carries", payload: "[l]"),
+  ])
+}
+
+pub fn a_parameter_named_arguments_is_an_ordinary_bound_test() {
+  let assume =
+    active_assume("assume app/ffi.call(arguments: [a]) : [] where runs : [a]")
+  assume.contract.runs |> should.equal(Some(["a"]))
+}
+
+pub fn an_empty_runs_is_a_written_no_run_test() {
+  // The same bound with and without `runs`: only the clause promises no-run.
+  active_assume("assume app/ffi.run(value: [v]) : []").contract.runs
+  |> should.equal(None)
+  active_assume("assume app/ffi.run(value: [v]) : [] where runs : []").contract.runs
+  |> should.equal(Some([]))
+}
+
+pub fn a_clause_only_line_keeps_its_contract_test() {
+  let assume =
+    active_assume(
+      "assume gleam/dynamic/decode.run(decoder: [d]) where runs : [d]",
+    )
+  assume.effects |> should.equal(None)
+  assume.contract.runs |> should.equal(Some(["d"]))
+}
+
+pub fn an_out_of_scope_variable_is_refused_by_the_owner_test() {
+  parse_active("assume app/ffi.run(values: [l]) : [] where runs : [m]")
+  |> should.be_error
+  parse_active("assume app/ffi.run(values: [l]) : [] where carries : [m]")
+  |> should.be_error
+  parse_active("assume app/ffi.run(values: [l]) : [] where relay : g(l)")
+  |> should.be_error
+  parse_active(
+    "assume app/ffi.run(values: [l]) : [] where carries : [m.returns]",
+  )
+  |> should.be_error
+}
+
+pub fn a_malformed_clause_says_nothing_in_a_reader_that_cannot_fix_it_test() {
+  let line = "assume app/ffi.run(values: [l]) : [Disk] where runs : [m]"
+  let #(file, rejected) = annotation.parse_file_lenient_with(line, types.Active)
+  rejected |> should.equal([])
+  let assert [AssumeLine(assume, clauses)] = file.lines
+  assume.effects |> should.equal(Some(TLabels(set.from_list(["Disk"]))))
+  assume.contract |> should.equal(types.no_contract)
+  clauses |> should.equal([UnknownClause(key: "runs", payload: "[m]")])
+  let assert Ok(catalog) = annotation.parse_catalog_with(line, types.Active)
+  let assert [AssumeLine(catalogued, _)] = catalog.lines
+  catalogued.contract |> should.equal(types.no_contract)
+}
+
+pub fn malformed_payloads_are_refused_by_the_owner_test() {
+  [
+    "assume app/ffi.run(values: [l]) : [] where runs : l",
+    "assume app/ffi.run(values: [l]) : [] where runs : [L]",
+    "assume app/ffi.run(values: [l]) : [] where runs : [l], runs : []",
+    "assume app/ffi.run(values: [l], f: [f]) : [] where relay : f",
+    "assume app/ffi.run(values: [l], f: [f]) : [] where relay : f(l), relay : f(_)",
+    "assume app/ffi.run(values: [l]) : [] where carries : l",
+  ]
+  |> list.each(fn(line) { parse_active(line) |> should.be_error })
+}
+
+pub fn a_carried_variable_in_the_effect_term_is_refused_by_any_reader_test() {
+  let line = "assume app/ffi.run(values: [l]) : [l] where runs : [l]"
+  parse_active(line) |> should.be_error
+  let #(_file, rejected) =
+    annotation.parse_file_lenient_with(line, types.Active)
+  list.length(rejected) |> should.equal(1)
+}
+
+pub fn a_result_latent_outside_carries_is_refused_test() {
+  parse_active("assume app/ffi.run(f: [f]) : [f.returns] where carries : [f]")
+  |> should.be_error
+  parse_active("assume app/ffi.run(cfg.returns: [e]) : [e] where runs : []")
+  |> should.be_error
+}
+
+pub fn latent_clauses_have_no_slot_on_other_lines_test() {
+  parse_active("effects app/ffi.run(values: [l]) : [] where runs : [l]")
+  |> should.be_error
+  parse_active("check app/ffi.run : [] where runs : []") |> should.be_error
+  parse_active("assume app/ffi : [] where runs : []") |> should.be_error
+  parse_active("assume app/ffi.Handler.run : [] where carries : []")
+  |> should.be_error
+}
+
+pub fn latent_clauses_format_in_a_canonical_order_test() {
+  let assert Ok(file) =
+    parse_active(
+      "assume app/ffi.run(values: [l], f: [f]) : [f] where later : [x], carries : [l], relay : f(_, l), runs : [l], returns : [Net]",
+    )
+  annotation.format_file(file)
+  |> should.equal(
+    "assume app/ffi.run(values: [l], f: [f]) : [f]\n  where returns : [Net],\n        runs : [l],\n        relay : f(_, l),\n        carries : [l],\n        later : [x]",
+  )
+}
+
+pub fn latent_clauses_round_trip_test() {
+  use assume <- qcheck.given(generators.latent_assume_gen())
+  let formatted = annotation.format_assume(assume)
+  let assert Ok(types.GradedFile(lines: [AssumeLine(parsed, [])])) =
+    parse_active(formatted)
+  parsed |> should.equal(assume)
+}
+
+pub fn infer_keeps_a_written_contract_line_test() {
+  let assert Ok(spec) =
+    parse_active(
+      "assume app/ffi.run(values: [l]) : [] where runs : [], carries : [l]\n",
+    )
+  annotation.merge_inferred(
+    spec,
+    [],
+    stale_assumes: set.new(),
+    stale_returns_clauses: set.new(),
+  )
+  |> annotation.format_file
+  |> should.equal(
+    "assume app/ffi.run(values: [l]) : [] where runs : [], carries : [l]\n",
+  )
 }

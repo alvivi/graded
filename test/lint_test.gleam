@@ -61,6 +61,7 @@ fn context(
       panic as "dependency completeness was forced"
     },
     mode: types.Inactive,
+    resolve_bounds: fn(_) { [] },
   )
 }
 

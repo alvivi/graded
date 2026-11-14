@@ -313,6 +313,7 @@ fn assume(
     params: [],
     effects: Some(types.TLabels(set.from_list(labels))),
     returns: None,
+    contract: types.no_contract,
   )
 }
 
@@ -326,6 +327,7 @@ fn module_assume(
     params: [],
     effects: Some(types.TLabels(set.from_list(labels))),
     returns: None,
+    contract: types.no_contract,
   )
 }
 
@@ -337,6 +339,7 @@ fn wildcard_assume(module: String, function: String) -> types.AssumeAnnotation {
     params: [],
     effects: Some(types.TTop),
     returns: None,
+    contract: types.no_contract,
   )
 }
 
@@ -1495,6 +1498,7 @@ pub fn a_rejected_module_line_blocks_its_module_test() {
       params: [],
       effects: Some(types.TTop),
       returns: None,
+      contract: types.no_contract,
     ),
   )
   |> should.be_true()
@@ -1786,6 +1790,7 @@ fn load_warnings(
       rejected,
       foreign,
       effects.ShipsModules,
+      [],
     ),
   )
 }
@@ -1995,6 +2000,7 @@ pub fn every_line_about_shipped_code_is_kept_test() {
       returns: Some(
         effect_term.from_effect_set(Specific(set.from_list(["Net"]))),
       ),
+      contract: types.no_contract,
     ),
   ])
   let run = QualifiedName("dep", "run")
@@ -3694,7 +3700,7 @@ pub fn a_knowledge_base_carries_the_reading_it_was_loaded_under_test() {
     "/tmp/graded_no_packages",
     catalog,
     dict.new(),
-    types.Active,
+    effects.SpecReading(mode: types.Active, refuses: fn(_) { False }),
   )
   |> effects.lat_mode
   |> should.equal(types.Active)

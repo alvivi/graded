@@ -20,6 +20,7 @@ import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded/internal/config
+import graded/internal/typedefs
 import graded/internal/types.{type QualifiedName, QualifiedName}
 import simplifile
 
@@ -60,6 +61,10 @@ pub type ParameterInfo {
     // order. Empty for first-order parameters. Lets the call site curry an
     // argument's abstraction over exactly the right positions.
     callback_positions: List(Int),
+    // The declared type, resolved in the defining module's scope, where the
+    // signature was read from source with one. What tells a parameter that
+    // holds functions from one that is a function, through any alias.
+    annotation: Option(typedefs.TypeExpr),
   )
 }
 
@@ -327,15 +332,52 @@ pub fn from_glance_module(
   module: Module,
 ) -> SignatureRegistry {
   let alias_map = type_alias_map(module.type_aliases)
+  let scope = typedefs.module_scope(module_path, module)
   let signatures =
     list.fold(module.functions, dict.new(), fn(acc, definition) {
-      dict.insert(
+      let parameters =
+        parameter_infos(definition.definition, alias_map, Some(scope))
+      dict.upsert(
         acc,
         QualifiedName(module: module_path, function: definition.definition.name),
-        parameter_infos(definition.definition, alias_map),
+        fn(existing) {
+          case existing {
+            Some(earlier) -> agreed_parameters(earlier, parameters)
+            None -> parameters
+          }
+        },
       )
     })
+
   SignatureRegistry(signatures:, callback_signatures: dict.new())
+}
+
+// The parameters of two `@target` variants of one function: each one's
+// declared type kept where both declare the same, and read as a function only
+// where both are. Variants taking different counts keep the later's positions
+// with neither.
+fn agreed_parameters(
+  earlier: List(ParameterInfo),
+  later: List(ParameterInfo),
+) -> List(ParameterInfo) {
+  case list.strict_zip(earlier, later) {
+    Ok(pairs) ->
+      list.map(pairs, fn(pair) {
+        let #(earlier, later) = pair
+        ParameterInfo(
+          ..later,
+          is_fn_typed: earlier.is_fn_typed && later.is_fn_typed,
+          annotation: case earlier.annotation == later.annotation {
+            True -> later.annotation
+            False -> None
+          },
+        )
+      })
+    Error(Nil) ->
+      list.map(later, fn(parameter) {
+        ParameterInfo(..parameter, is_fn_typed: False, annotation: None)
+      })
+  }
 }
 
 // A registry holding one function, against an alias map handed in. The
@@ -352,7 +394,7 @@ pub fn from_single_function(
     signatures: dict.from_list([
       #(
         QualifiedName(module: module_path, function: definition.definition.name),
-        parameter_infos(definition.definition, alias_map),
+        parameter_infos(definition.definition, alias_map, None),
       ),
     ]),
     callback_signatures: dict.new(),
@@ -363,6 +405,7 @@ pub fn from_single_function(
 fn parameter_infos(
   function: Function,
   alias_map: Dict(String, glance.Type),
+  scope: Option(typedefs.ModuleScope),
 ) -> List(ParameterInfo) {
   list.index_map(function.parameters, fn(param, i) {
     let resolved =
@@ -383,18 +426,75 @@ fn parameter_infos(
       is_annotated: option.is_some(param.type_),
       is_operator: callback_positions != [],
       callback_positions:,
+      annotation: case scope, param.type_ {
+        Some(scope), Some(type_) -> Some(typedefs.resolve_in(scope, type_))
+        _, _ -> None
+      },
     )
   })
 }
 
 // Module-local type aliases as a raw `name → aliased type` map, the input every
 // alias-aware reading resolves against.
+//
+// A name `@target` defines once per target as different types is left out, so
+// it reads as no alias.
 pub fn type_alias_map(
   aliases: List(Definition(glance.TypeAlias)),
 ) -> Dict(String, glance.Type) {
-  list.fold(aliases, dict.new(), fn(acc, definition) {
-    dict.insert(acc, definition.definition.name, definition.definition.aliased)
-  })
+  let #(map, unsettled) =
+    list.fold(aliases, #(dict.new(), set.new()), fn(acc, definition) {
+      let #(map, unsettled) = acc
+      let glance.TypeAlias(name:, aliased:, ..) = definition.definition
+      case dict.get(map, name) {
+        Ok(earlier) ->
+          case same_type(earlier, aliased) {
+            True -> acc
+            False -> #(map, set.insert(unsettled, name))
+          }
+        Error(Nil) -> #(dict.insert(map, name, aliased), unsettled)
+      }
+    })
+  dict.drop(map, set.to_list(unsettled))
+}
+
+// Whether two written types are the same, wherever each is written.
+pub fn same_type(left: glance.Type, right: glance.Type) -> Bool {
+  case left, right {
+    glance.NamedType(name:, module:, parameters:, ..),
+      glance.NamedType(
+        name: other_name,
+        module: other_module,
+        parameters: other_parameters,
+        ..,
+      )
+    ->
+      name == other_name
+      && module == other_module
+      && same_types(parameters, other_parameters)
+    glance.TupleType(elements:, ..), glance.TupleType(elements: other, ..) ->
+      same_types(elements, other)
+    glance.FunctionType(parameters:, return:, ..),
+      glance.FunctionType(
+        parameters: other_parameters,
+        return: other_return,
+        ..,
+      )
+    ->
+      same_types(parameters, other_parameters)
+      && same_type(return, other_return)
+    glance.VariableType(name:, ..), glance.VariableType(name: other, ..)
+    | glance.HoleType(name:, ..), glance.HoleType(name: other, ..)
+    -> name == other
+    _, _ -> False
+  }
+}
+
+fn same_types(left: List(glance.Type), right: List(glance.Type)) -> Bool {
+  case list.strict_zip(left, right) {
+    Ok(pairs) -> list.all(pairs, fn(pair) { same_type(pair.0, pair.1) })
+    Error(Nil) -> False
+  }
 }
 
 // Function-typed *record fields* of a module's custom types, keyed by

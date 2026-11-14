@@ -503,7 +503,62 @@ pub type AssumeAnnotation {
     params: List(ParamBound),
     effects: Option(EffectTerm),
     returns: Option(EffectTerm),
+    // What the line states about the function values its arguments carry and
+    // its result holds. `no_contract` on every line read without the
+    // latent-effect rules, and on every line that states none.
+    contract: LatentContract,
   )
+}
+
+// Latent-effect contracts
+//
+// What a written `assume` line states about function values held in data: which
+// arguments the call may run, which callback parameters receive an argument's
+// nested values, and what the result carries. Each names the line's bound
+// variables: a bound on a callback names its cost, a bound on any other
+// parameter names what that argument carries.
+
+pub type LatentContract {
+  LatentContract(
+    // `runs : [v, ...]`: the carried variables of the arguments the call may
+    // run. Exhaustive where present; `None` where the line has no `runs`
+    // clause, which leaves every argument that is not a callback free to run.
+    runs: Option(List(String)),
+    // One `relay : f(l, _)` clause per callback, in the order written.
+    relays: List(Relay),
+    // `carries : [term]`: what the result carries, over the line's bound
+    // variables. `None` where the line does not say.
+    carries: Option(EffectTerm),
+  )
+}
+
+// What a line that states nothing about function values in data says.
+pub const no_contract =
+  LatentContract(runs: option.None, relays: [], carries: option.None)
+
+// One `relay` clause: the callback's bound variable, and for each of the
+// callback's parameters, in order, the carried variable whose nested values it
+// receives, or `None` for an unmapped position (`_`).
+pub type Relay {
+  Relay(callback: String, positions: List(Option(String)))
+}
+
+// The suffix that names what a callback's result carries: `n.returns` is the
+// carried latent of what callback `n` returns. Read in a `carries` clause only.
+pub const returns_suffix = ".returns"
+
+// What a bound's parameter is, once the function's signature and the types it
+// names are read.
+pub type BoundKind {
+  // A function-typed parameter: its bound names the callback's cost.
+  CallbackKind
+  // A parameter whose type is provably not a function: its bound names what
+  // the argument carries.
+  NonCallbackKind
+  // Neither is proven: an unresolved alias, a type variable, an unannotated
+  // parameter, a missing signature or an unmatched name. Gets no promise: its
+  // argument is charged as a callback and as one that may run.
+  UnknownKind
 }
 
 // One `where` clause this version retained but does not read. `payload` is the
@@ -1133,6 +1188,10 @@ pub type Warning {
   // real parameter and isn't flagged, since its bound stays load-bearing during
   // substitution.
   UnmatchedParamBoundWarning(function: String, param: String)
+  // A bound on a parameter that is not a callback whose payload is not one
+  // variable. Such a bound names what the argument carries, which one variable
+  // does; a ground set or an operator names nothing.
+  MeaninglessBoundWarning(function: String, param: String)
   // A `check` line whose qualified function name matches no function defined in
   // any project module — a missing module qualifier or a typo. The check then
   // never runs against any function and passes vacuously, so it's flagged.
