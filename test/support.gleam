@@ -3,8 +3,10 @@
 
 import filepath
 import gleam/list
+import gleam/result
 import gleam/string
 import graded
+import graded/internal/config
 import graded/internal/effects
 import simplifile
 
@@ -69,6 +71,62 @@ pub fn hex_tree(
       "[packages]\n" <> string.concat(installed) <> "\n[git]\n",
     ),
   ]
+}
+
+// A project depending on one installed hex package, `real`, whose module
+// `real` defines `f`, with `spec` as the root's spec. `real` is in no catalog.
+// Returns `directory`.
+pub fn real_dependency_tree(directory: String, spec: String) -> String {
+  reset_directory_mode(directory <> "/build/packages")
+  write_fixture(
+    directory,
+    list.append(hex_tree("app", [#("real", "1.0.0")]), [
+      #("src/app.gleam", "pub fn f() -> Int {\n  1\n}\n"),
+      #("app.graded", spec),
+      #("build/packages/real/src/real.gleam", "pub fn f() -> Int {\n  1\n}\n"),
+    ]),
+  )
+}
+
+// Run `assertions` while the `build/packages` of the `real_dependency_tree` at
+// `root` can be searched and not listed (mode `0311`), then restore its mode.
+// They run only where the mode is honoured, and after `packages.toml` and
+// `real`'s sources are shown to still read.
+pub fn with_search_only_packages(root: String, assertions: fn() -> Nil) -> Nil {
+  let packages = root <> "/build/packages"
+  use <- with_directory_mode(packages, 0o311, honoured: fn() {
+    result.is_error(simplifile.read_directory(packages))
+  })
+  let assert Ok(_) = config.read_toml(packages <> "/packages.toml")
+    as "packages.toml no longer reads"
+  let assert Ok(_) = config.source_files(packages <> "/real/src")
+    as "real's sources no longer walk"
+  assertions()
+}
+
+// Run `assertions` with the directory at `path` set to `mode`, then restore
+// mode `0755`. They run only where `honoured` says the mode holds: a process
+// that reads past it, root most often, proves nothing.
+pub fn with_directory_mode(
+  path: String,
+  mode: Int,
+  honoured honoured: fn() -> Bool,
+  run assertions: fn() -> Nil,
+) -> Nil {
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, mode)
+  case honoured() {
+    True -> assertions()
+    False -> Nil
+  }
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o755)
+  Nil
+}
+
+// Set mode `0755` on the directory at `path` if there is one, undoing a mode
+// an earlier run left in place, so the fixture there can be deleted.
+pub fn reset_directory_mode(path: String) -> Nil {
+  let _ = simplifile.set_permissions_octal(path, 0o755)
+  Nil
 }
 
 // Materialise the tree captured from a Gleam 1.19.0 build under

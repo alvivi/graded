@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `graded check` no longer reports an `assume` line's module as missing while
   `gleam.toml` declares dependencies and there is no `manifest.toml`, or while
   the manifest disagrees with `gleam.toml` or with the installed packages. Run
-  `gleam deps download` or `gleam build` to bring them back in step.
+  `gleam deps download` or `gleam build` to bring them back in step. The same
+  holds while the manifest lists a hex or git package and `build/packages`
+  cannot be listed.
 
 ### Fixed
 

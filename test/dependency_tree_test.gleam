@@ -204,10 +204,14 @@ pub fn a_dangling_link_fails_the_project_and_empties_a_dependency_test() {
 // Every tree below was captured from a real Gleam build, so each is the whole
 // tree Gleam resolved, and the root's spec line naming no module is reported.
 
-fn typo_reported(root: String) -> Bool {
+// Every warning `graded check` reports for the project at `root`.
+fn lint_warnings(root: String) -> List(types.Warning) {
   let assert Ok(results) = graded.check_project(root)
-  results
-  |> list.flat_map(fn(result) { result.warnings })
+  list.flat_map(results, fn(result) { result.warnings })
+}
+
+fn typo_reported(root: String) -> Bool {
+  lint_warnings(root)
   |> list.contains(types.UnmatchedModuleAssumeWarning(module: "nosuch_module"))
 }
 
@@ -277,9 +281,7 @@ pub fn the_lint_places_dev_only_and_transitive_modules_test() {
     root <> "/app.graded",
     "assume b : []\nassume d : []\nassume nosuch_module : []\n",
   )
-  let assert Ok(results) = graded.check_project(root)
-  results
-  |> list.flat_map(fn(result) { result.warnings })
+  lint_warnings(root)
   |> should.equal([types.UnmatchedModuleAssumeWarning(module: "nosuch_module")])
   support.cleanup(root <> "/..")
 }
@@ -318,6 +320,39 @@ pub fn a_tree_with_rebar3_and_mix_packages_is_linted_test() {
   graded.placement_module_files(root)
   |> dict.has_key("expkg/bridge")
   |> should.be_true
+  support.cleanup(root)
+}
+
+// An installed module only placement can place
+//
+// `real` is installed and in no catalog, beside a module no package holds,
+// each named at module level and per function.
+
+const placement_spec =
+  "assume real : []
+assume real.f : []
+assume nosuch_module : []
+assume nosuch_module.f : []
+"
+
+pub fn an_installed_module_is_placed_beside_a_reported_typo_test() {
+  let root =
+    support.real_dependency_tree("build/dt_lint_installed", placement_spec)
+  lint_warnings(root)
+  |> should.equal([
+    types.UnmatchedModuleAssumeWarning(module: "nosuch_module"),
+    types.UnmatchedFunctionAssumeWarning(function: "nosuch_module.f"),
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_search_only_packages_directory_leaves_the_lint_silent_test() {
+  let root =
+    support.real_dependency_tree("build/dt_lint_search_only", placement_spec)
+  {
+    use <- support.with_search_only_packages(root)
+    lint_warnings(root) |> should.equal([])
+  }
   support.cleanup(root)
 }
 
