@@ -602,6 +602,16 @@ pub fn a_local_cycle_is_incomplete_test() {
   )
 }
 
+pub fn a_search_only_packages_directory_is_incomplete_test() {
+  let root = support.real_dependency_tree("build/pt_search_only", "")
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_true
+  {
+    use <- support.with_search_only_packages(root)
+    package_tree.discover(root) |> package_tree.is_complete |> should.be_false
+  }
+  support.cleanup(root)
+}
+
 // Edges from installed packages' own `gleam.toml`
 //
 // Read only where the manifest cannot be read whole.

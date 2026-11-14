@@ -637,8 +637,9 @@ fn strings(values: List(tom.Toml)) -> Result(List(String), Nil) {
 //
 // Whether the tree graded reads is provably the whole tree Gleam resolved:
 // the manifest is well formed, agrees with the root's declarations and with
-// the provider of every package, the installed records agree with it, nothing
-// was flagged, the graph is acyclic, and every package it lists was found.
+// the provider of every package, the installed records agree with it, the
+// installed packages can be listed, nothing was flagged, the graph is acyclic,
+// and every package it lists was found.
 
 pub fn is_complete(local: LocalPackages) -> Bool {
   case local.root_declarations, local.manifest {
@@ -652,6 +653,7 @@ pub fn is_complete(local: LocalPackages) -> Bool {
       && local_entries_match(local, manifest)
       && list.all(manifest.entries, provider_matches(local, root, manifest, _))
       && installed_records_match(local.root, manifest)
+      && installed_packages_listed(local.root, manifest)
       && local.flags == []
       && !has_cycle(local.edges)
       && list.all(manifest.entries, is_located(local, _))
@@ -770,9 +772,8 @@ fn provided_by_installed(
   manifest: Manifest,
   entry: ManifestEntry,
 ) -> Bool {
-  list.any(manifest.entries, fn(requirer) {
-    requirer.source != "local"
-    && list.contains(requirer.requirements, entry.name)
+  list.any(installed_entries(manifest), fn(requirer) {
+    list.contains(requirer.requirements, entry.name)
     && case installed_dependencies(package_root, requirer.name) {
       Error(Nil) -> False
       Ok(dependencies) ->
@@ -816,8 +817,7 @@ fn within_repository(base: String, path: String) -> Result(String, Nil) {
 // manifest's version, and a `git` entry — which must name its commit — at
 // that commit and its path.
 fn installed_records_match(package_root: String, manifest: Manifest) -> Bool {
-  let installed =
-    list.filter(manifest.entries, fn(entry) { entry.source != "local" })
+  let installed = installed_entries(manifest)
   use <- bool.guard(when: installed == [], return: True)
   case
     config.read_toml(filepath.join(package_root, "build/packages/packages.toml"))
@@ -838,6 +838,19 @@ fn installed_records_match(package_root: String, manifest: Manifest) -> Bool {
         }
       })
   }
+}
+
+// `build/packages` lists, wherever the manifest has an installed entry: the
+// listing placement and the dependency scan read.
+fn installed_packages_listed(package_root: String, manifest: Manifest) -> Bool {
+  let packages = filepath.join(package_root, "build/packages")
+  installed_entries(manifest) == []
+  || result.is_ok(simplifile.read_directory(packages))
+}
+
+// The entries Gleam installs under `build/packages`: every one not `local`.
+fn installed_entries(manifest: Manifest) -> List(ManifestEntry) {
+  list.filter(manifest.entries, fn(entry) { entry.source != "local" })
 }
 
 // The entry's package was found: its directory's `src/` walks, and holds a
