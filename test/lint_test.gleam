@@ -60,6 +60,7 @@ fn context(
     dependency_sources_are_complete: fn() {
       panic as "dependency completeness was forced"
     },
+    mode: types.Inactive,
   )
 }
 

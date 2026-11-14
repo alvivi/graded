@@ -71,7 +71,13 @@ pub fn describe_parse_error_line(error: ParseError) -> String {
 // one no line could have declared for either.
 pub fn blocker_for_rejected(error: ParseError) -> Option(GradedLine) {
   use path <- option.then(rejected_path(error))
-  case parse_structured_line("assume " <> path <> " : [_]", error.line_number) {
+  case
+    parse_structured_line(
+      "assume " <> path <> " : [_]",
+      error.line_number,
+      types.Inactive,
+    )
+  {
     Ok(line) -> Some(line)
     Error(_) -> None
   }
@@ -165,13 +171,21 @@ fn retired_hint(keyword: RetiredKeyword) -> String {
 // any statement is parsed, so a join error anywhere in the file is the error
 // even when a line the grammar refuses sits above it.
 pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
+  parse_file_with(input, types.Inactive)
+}
+
+// `parse_file` under the given latent-effect reading.
+pub fn parse_file_with(
+  input: String,
+  mode: types.LatMode,
+) -> Result(GradedFile, ParseError) {
   use logical <- result.try(
     input |> physical_lines() |> join_continuations() |> result.all(),
   )
   logical
   |> list.try_map(fn(pair) {
     let #(line_number, line) = pair
-    parse_structured_line(line, line_number)
+    parse_structured_line(line, line_number, mode)
   })
   |> result.map(fn(lines) { GradedFile(lines:) })
 }
@@ -186,13 +200,21 @@ pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
 // had to answer one would be answering it for a reader that never writes the
 // file back.
 pub fn parse_file_lenient(input: String) -> #(GradedFile, List(ParseError)) {
+  parse_file_lenient_with(input, types.Inactive)
+}
+
+// `parse_file_lenient` under the given latent-effect reading.
+pub fn parse_file_lenient_with(
+  input: String,
+  mode: types.LatMode,
+) -> #(GradedFile, List(ParseError)) {
   let read =
     input
     |> physical_lines()
     |> join_continuations()
     |> list.map(fn(element) {
       use #(line_number, line) <- result.try(element)
-      parse_structured_line(line, line_number)
+      parse_structured_line(line, line_number, mode)
     })
   // `result.partition` hands both halves back in reverse.
   let #(lines, rejected) = result.partition(read)
@@ -362,6 +384,7 @@ fn leading_keyword(trimmed: String) -> Option(#(LeadingKeyword, String)) {
 fn parse_structured_line(
   line: String,
   line_number: Int,
+  mode: types.LatMode,
 ) -> Result(GradedLine, ParseError) {
   let trimmed = string.trim(line)
   case trimmed {
@@ -371,9 +394,9 @@ fn parse_structured_line(
       case leading_keyword(trimmed) {
         None -> Error(InvalidLine(line_number, line))
         Some(#(LeadsEffects, _)) | Some(#(LeadsCheck, _)) ->
-          parse_annotation_line(trimmed, line_number, line)
+          parse_annotation_line(trimmed, line_number, line, mode)
         Some(#(LeadsAssume, rest)) ->
-          parse_assume_line(rest)
+          parse_assume_line(rest, mode)
           |> result.replace_error(InvalidLine(line_number, line))
         Some(#(LeadsRetired(keyword), _)) ->
           Error(RetiredSpelling(line_number, line, keyword))
@@ -385,6 +408,7 @@ fn parse_annotation_line(
   trimmed: String,
   line_number: Int,
   original: String,
+  mode: types.LatMode,
 ) -> Result(GradedLine, ParseError) {
   let #(kind, rest) = case trimmed {
     "effects " <> remaining -> #(Ok(Effects), remaining)
@@ -394,7 +418,7 @@ fn parse_annotation_line(
   case kind {
     Error(Nil) -> Error(InvalidLine(line_number, original))
     Ok(parsed_kind) ->
-      parse_annotation_rest(parsed_kind, rest, line_number, original)
+      parse_annotation_rest(parsed_kind, rest, line_number, original, mode)
   }
 }
 
@@ -403,11 +427,12 @@ fn parse_annotation_rest(
   rest: String,
   line_number: Int,
   original: String,
+  mode: types.LatMode,
 ) -> Result(GradedLine, ParseError) {
   // The clause region comes off first: `parse_name_colon_effects` splits on the
   // first colon, so a name-first read would take `m.f where returns` for the
   // function name.
-  parse_clause_then(rest, fn(head, returns, unknown_clauses) {
+  parse_clause_then(rest, mode, fn(head, returns, unknown_clauses) {
     parse_annotation_head(kind, head, returns)
     |> result.map(AnnotationLine(_, unknown_clauses))
   })
@@ -419,13 +444,14 @@ fn parse_annotation_rest(
 // unknown clauses to `parse_head`.
 fn parse_clause_then(
   rest: String,
+  mode: types.LatMode,
   parse_head: fn(String, Option(EffectTerm), List(UnknownClause)) ->
     Result(a, Nil),
 ) -> Result(a, Nil) {
   use #(head, region) <- result.try(split_clause_region(rest))
   use #(returns, unknown_clauses) <- result.try(case region {
     None -> Ok(#(None, []))
-    Some(text) -> parse_clause_list(text)
+    Some(text) -> parse_clause_list(text, mode)
   })
   parse_head(head, returns, unknown_clauses)
 }
@@ -436,6 +462,7 @@ fn parse_clause_then(
 // its own key may repeat.
 fn parse_clause_list(
   region: String,
+  _mode: types.LatMode,
 ) -> Result(#(Option(EffectTerm), List(UnknownClause)), Nil) {
   use entries <- result.try(
     region |> split_top_level_commas() |> list.try_map(parse_clause_entry),
@@ -652,8 +679,11 @@ type AssumeSubject {
 // names. A function's or a module's effects term has its root abstractions
 // grounded to `[Unknown]` — it is an effect, never an operator; a field's stays
 // as written.
-fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
-  parse_clause_then(rest, parse_assume_head)
+fn parse_assume_line(
+  rest: String,
+  mode: types.LatMode,
+) -> Result(GradedLine, Nil) {
+  parse_clause_then(rest, mode, parse_assume_head)
 }
 
 fn parse_assume_head(

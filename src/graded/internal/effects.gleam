@@ -163,6 +163,8 @@ pub type KnowledgeBase {
     // new ones would leave it `[Unknown]`. `None` where no package is newly
     // loaded.
     structural_baseline: Option(StructuralBaseline),
+    // The latent-effect reading the run chose before it parsed anything.
+    lat_mode: types.LatMode,
   )
 }
 
@@ -189,6 +191,19 @@ pub fn load_knowledge_base(
   )
 }
 
+// The knowledge base's latent-effect reading.
+pub fn lat_mode(knowledge_base: KnowledgeBase) -> types.LatMode {
+  knowledge_base.lat_mode
+}
+
+// The same knowledge base, read under `mode`.
+pub fn with_lat_mode(
+  knowledge_base: KnowledgeBase,
+  mode: types.LatMode,
+) -> KnowledgeBase {
+  KnowledgeBase(..knowledge_base, lat_mode: mode)
+}
+
 // The bundled catalog as one value. Held together so a caller needing it twice
 // — the knowledge base and the spec lint both do — reads the files once.
 pub type BundledCatalog {
@@ -205,8 +220,17 @@ pub fn load_project_catalog(
   catalog: List(CatalogFile),
   manifest_path: String,
 ) -> BundledCatalog {
+  load_project_catalog_with(catalog, manifest_path, types.Inactive)
+}
+
+// `load_project_catalog` under the given latent-effect reading.
+pub fn load_project_catalog_with(
+  catalog: List(CatalogFile),
+  manifest_path: String,
+  mode: types.LatMode,
+) -> BundledCatalog {
   let #(functions, modules, param_bounds, type_fields) =
-    load_catalog(catalog, manifest_path)
+    load_catalog_with(catalog, manifest_path, mode)
   BundledCatalog(functions:, modules:, param_bounds:, type_fields:)
 }
 
@@ -216,7 +240,23 @@ pub fn knowledge_base_from_catalog(
   catalog: BundledCatalog,
   dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
 ) -> KnowledgeBase {
-  let deps = load_dependencies(packages_directory, dependency_foreign)
+  knowledge_base_from_catalog_with(
+    packages_directory,
+    catalog,
+    dependency_foreign,
+    types.Inactive,
+  )
+}
+
+// `knowledge_base_from_catalog` under the given latent-effect reading, which
+// the dependency specs are read under and the base carries.
+pub fn knowledge_base_from_catalog_with(
+  packages_directory: String,
+  catalog: BundledCatalog,
+  dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
+  mode: types.LatMode,
+) -> KnowledgeBase {
+  let deps = load_dependencies(packages_directory, dependency_foreign, mode)
   let BundledCatalog(
     functions: cat_effects,
     modules: cat_module_effects,
@@ -260,6 +300,7 @@ pub fn knowledge_base_from_catalog(
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
+    lat_mode: mode,
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -288,6 +329,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
+    lat_mode: types.Inactive,
   )
 }
 
@@ -317,6 +359,7 @@ pub fn empty_knowledge_base(
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
+    lat_mode: types.Inactive,
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -3006,7 +3049,20 @@ fn with_loaded_spec(load: DepSpecLoad, absent: a, read: fn(DepSpec) -> a) -> a {
 // types needs to resolve at a consumer's call site, or the `assume`
 // lines the dep author wrote for its FFI.
 pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpecLoad {
-  load_dep_spec_at(dep_root, config.spec_file_for(dep_root, package_name))
+  load_dep_spec_with(dep_root, package_name, types.Inactive)
+}
+
+// `load_dep_spec` under the given latent-effect reading.
+pub fn load_dep_spec_with(
+  dep_root: String,
+  package_name: String,
+  mode: types.LatMode,
+) -> DepSpecLoad {
+  load_dep_spec_at_with(
+    dep_root,
+    config.spec_file_for(dep_root, package_name),
+    mode,
+  )
 }
 
 // The same load, over a spec path the caller already resolved. `dep_root` stays
@@ -3026,13 +3082,23 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpecLoad {
 // package whose `src/` tree is missing, unreadable or holds no Gleam module
 // ships no module at all.
 pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
+  load_dep_spec_at_with(dep_root, spec_path, types.Inactive)
+}
+
+// `load_dep_spec_at` under the given latent-effect reading.
+pub fn load_dep_spec_at_with(
+  dep_root: String,
+  spec_path: String,
+  mode: types.LatMode,
+) -> DepSpecLoad {
   case read_optional_file(spec_path) {
     Error(cause) -> SpecUnreadable(path: spec_path, cause:)
     Ok(None) -> SpecAbsent
     Ok(Some(content)) -> {
       let source_dir = filepath.join(dep_root, "src")
       let modules = package_modules(source_dir)
-      let #(parsed, rejected) = annotation.parse_file_lenient(content)
+      let #(parsed, rejected) =
+        annotation.parse_file_lenient_with(content, mode)
       let #(owned_lines, foreign_lines) = partition_owned(parsed.lines, modules)
       let owned = types.GradedFile(lines: owned_lines)
       // Built against the owned lines alone: only an owned blanket shields a
@@ -3480,6 +3546,7 @@ type Dependencies {
 fn load_dependencies(
   packages_directory: String,
   foreign: Dict(QualifiedName, types.ForeignFunction),
+  mode: types.LatMode,
 ) -> Dependencies {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) ->
@@ -3494,7 +3561,7 @@ fn load_dependencies(
     fn(acc, package_name) {
       let origin = DependencySpec(package: package_name)
       let dep_root = packages_directory <> "/" <> package_name
-      let load = load_dep_spec(dep_root, package_name)
+      let load = load_dep_spec_with(dep_root, package_name, mode)
       warn_dep_spec_load(package_name, load)
       use spec <- with_loaded_spec(load, acc)
       let dep = sanitize_dep_spec(spec, foreign)
@@ -3586,11 +3653,28 @@ pub fn load_catalog(
   Dict(QualifiedName, List(ParamBound)),
   List(#(FieldAnnotation, LookupOrigin)),
 ) {
+  load_catalog_with(catalog, manifest_path, types.Inactive)
+}
+
+// `load_catalog` under the given latent-effect reading.
+pub fn load_catalog_with(
+  catalog: List(CatalogFile),
+  manifest_path: String,
+  mode: types.LatMode,
+) -> #(
+  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  Dict(String, #(EffectTerm, LookupOrigin)),
+  Dict(QualifiedName, List(ParamBound)),
+  List(#(FieldAnnotation, LookupOrigin)),
+) {
   let installed_versions = manifest_versions(manifest_path)
   let selected = resolve_catalog_files(catalog, installed_versions)
   let initial =
     CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), dict.new(), [])
-  let acc = list.fold(selected, initial, fold_catalog_file)
+  let acc =
+    list.fold(selected, initial, fn(acc, entry) {
+      fold_catalog_file(acc, entry, mode)
+    })
   // Across files, an `effects` annotation takes precedence over another
   // package's per-function `assume` marker; within one file the reader has
   // already dropped the `effects` line an `assume` keys. Each term carries the
@@ -3610,12 +3694,16 @@ pub fn load_catalog(
 // specific function effects; `effects` lines with param bounds feed polymorphic
 // higher-order entries. Both kinds of function entry are tagged
 // `Catalog(package)`. Files that fail to read or parse are silently skipped.
-fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
+fn fold_catalog_file(
+  acc: CatalogAcc,
+  entry: #(String, String),
+  mode: types.LatMode,
+) -> CatalogAcc {
   let #(package, file_path) = entry
   case simplifile.read(file_path) {
     Error(_) -> acc
     Ok(content) ->
-      case annotation.parse_file(content) {
+      case annotation.parse_file_with(content, mode) {
         Error(_) -> acc
         Ok(graded_file) -> {
           let origin = Catalog(package:)
