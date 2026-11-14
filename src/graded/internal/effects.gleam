@@ -36,13 +36,51 @@ pub type EffectLookup {
   Unknown
 }
 
+// One function's term with the source that wrote it and the kind of statement
+// that was. One value, so every merge that picks a term picks the other two
+// with it.
+pub type TermEntry {
+  TermEntry(term: EffectTerm, origin: LookupOrigin, lineage: types.Lineage)
+}
+
+// What kind of statement a lookup's source names.
+pub fn lineage_of(source: types.EffectSource) -> types.Lineage {
+  case source {
+    types.FunctionEntry(lineage:, ..) -> lineage
+    // Only an `assume` line keys a module.
+    types.ModuleAssumeEntry(..) -> types.DeclaredLine
+  }
+}
+
+// What kind of statement a returned-operator summary came from.
+pub fn summary_lineage(summary: SummaryOrigin) -> types.Lineage {
+  case summary {
+    Fresh -> types.CurrentInference
+    Closed(..) -> types.GeneratedLine
+    Declared(..) -> types.DeclaredLine
+  }
+}
+
+// What kind of statement wrote the terms a source's inferred-effects fold
+// carries: a spec's `effects` lines are generated, this run's inference is
+// current, and every written source is declared.
+fn inferred_lineage(origin: LookupOrigin) -> types.Lineage {
+  case origin {
+    CommittedSpec | DependencySpec(..) | PathDependency(..) ->
+      types.GeneratedLine
+    ProjectInferred | PathDependencyInferred(..) -> types.CurrentInference
+    UserAssume | Catalog(..) | ModuleAssumeOrigin(..) | FieldAssumeOrigin(..) ->
+      types.DeclaredLine
+  }
+}
+
 // Bundles all effect knowledge: dependency + catalog, precomputed for fast lookup.
 pub type KnowledgeBase {
   KnowledgeBase(
     // Each function's effect term paired with the source that wrote it. The two
     // are one value, so every insert, merge and lookup carries both: the merge
     // that picks a term picks its origin with it.
-    all_effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    all_effects: Dict(QualifiedName, TermEntry),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
     // Keyed by #(defining module, type name, field). The module qualifies the
     // type so same-named types in different modules don't collide. Bare
@@ -220,7 +258,7 @@ pub fn with_lat_mode(
 // — the knowledge base and the spec lint both do — reads the files once.
 pub type BundledCatalog {
   BundledCatalog(
-    functions: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    functions: Dict(QualifiedName, TermEntry),
     modules: Dict(String, #(EffectTerm, LookupOrigin)),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
     type_fields: List(#(FieldAnnotation, LookupOrigin)),
@@ -497,10 +535,7 @@ pub fn with_assumes(
 // The two tiers a set of `assume` lines feeds: function-level entries
 // keyed by `QualifiedName`, module-level ones keyed by module name.
 type AssumeTiers =
-  #(
-    Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
-    Dict(String, #(EffectTerm, LookupOrigin)),
-  )
+  #(Dict(QualifiedName, TermEntry), Dict(String, #(EffectTerm, LookupOrigin)))
 
 // Sort assume annotations into the two maps they feed, each term paired with
 // the source that declared it. Splitting is separate from merging so each
@@ -521,7 +556,11 @@ fn split_assumes(
       dict.new(),
       fn(accumulator, entry) {
         let #(name, effects, _bounds) = entry
-        dict.insert(accumulator, name, #(effects, origin))
+        dict.insert(
+          accumulator,
+          name,
+          TermEntry(term: effects, origin:, lineage: types.DeclaredLine),
+        )
       },
     )
   let module_assumes =
@@ -586,7 +625,8 @@ fn raw_lookup(
   name: QualifiedName,
 ) -> Option(#(EffectTerm, types.EffectSource)) {
   case dict.get(knowledge_base.all_effects, name) {
-    Ok(#(term, origin)) -> Some(#(term, types.FunctionEntry(origin:)))
+    Ok(TermEntry(term:, origin:, lineage:)) ->
+      Some(#(term, types.FunctionEntry(origin:, lineage:)))
     Error(Nil) ->
       case dict.get(knowledge_base.module_effects, name.module) {
         Ok(#(term, origin)) -> Some(#(term, types.ModuleAssumeEntry(origin:)))
@@ -1363,7 +1403,7 @@ pub fn is_dependency_foreign_function(
 // beside a term rather than rendering it.
 pub fn origin_of(source: types.EffectSource) -> LookupOrigin {
   case source {
-    types.FunctionEntry(origin:) -> origin
+    types.FunctionEntry(origin:, ..) -> origin
     types.ModuleAssumeEntry(origin:) -> origin
   }
 }
@@ -1553,7 +1593,10 @@ fn undeclared_lookup(
     Ok(_) ->
       Known(
         declared_charge(knowledge_base, name).term,
-        types.FunctionEntry(origin: ProjectInferred),
+        types.FunctionEntry(
+          origin: ProjectInferred,
+          lineage: types.CurrentInference,
+        ),
       )
     Error(Nil) -> Unknown
   }
@@ -1793,7 +1836,7 @@ pub fn with_inferred(
   KnowledgeBase(
     ..knowledge_base,
     all_effects: dict.merge(
-      with_origin(inferred, origin),
+      with_origin(inferred, origin, inferred_lineage(origin)),
       knowledge_base.all_effects,
     ),
   )
@@ -1836,7 +1879,7 @@ pub fn with_path_dep_inferred(
     ..knowledge_base,
     all_effects: dict.merge(
       knowledge_base.all_effects,
-      with_origin(winning, origin),
+      with_origin(winning, origin, types.CurrentInference),
     ),
     param_bounds: dict.merge(
       params,
@@ -1852,7 +1895,7 @@ fn answers_over_catalog(
   term: EffectTerm,
 ) -> Bool {
   case dict.get(knowledge_base.all_effects, name) {
-    Ok(#(_term, origin)) ->
+    Ok(TermEntry(origin:, ..)) ->
       is_catalog_origin(origin)
       && resolves_over_catalog(knowledge_base, name, term)
     Error(Nil) ->
@@ -1964,8 +2007,11 @@ pub type ScopedClause {
 fn with_origin(
   entries: Dict(QualifiedName, EffectTerm),
   origin: LookupOrigin,
-) -> Dict(QualifiedName, #(EffectTerm, LookupOrigin)) {
-  dict.map_values(entries, fn(_name, term) { #(term, origin) })
+  lineage: types.Lineage,
+) -> Dict(QualifiedName, TermEntry) {
+  dict.map_values(entries, fn(_name, term) {
+    TermEntry(term:, origin:, lineage:)
+  })
 }
 
 // Pair every clause in a `name -> clause` map with the source that wrote it,
@@ -2579,9 +2625,10 @@ pub fn with_newly_loaded_spec(
     admitted(
       knowledge_base,
       baseline,
-      dict.map_values(function_assumes, fn(_name, entry) { entry.0 }),
+      dict.map_values(function_assumes, fn(_name, entry) { entry.term }),
       origin,
       DeclaredContribution,
+      types.DeclaredLine,
     )
   let inferred =
     admitted(
@@ -2590,10 +2637,11 @@ pub fn with_newly_loaded_spec(
       dep.effects,
       origin,
       InferredContribution,
+      types.GeneratedLine,
     )
   knowledge_base
   |> with_newly_loaded_modules(module_assumes)
-  |> with_admitted_effects(dict.merge(inferred, declared), dep.params)
+  |> with_admitted_effects(dict.merge(inferred, declared), dep_spec_params(dep))
   |> gap_filling_declared_returns(
     unanswered_returns(baseline, dep.declared_returns),
     origin,
@@ -2616,7 +2664,14 @@ pub fn with_newly_loaded_inferred(
 ) -> KnowledgeBase {
   knowledge_base
   |> with_admitted_effects(
-    admitted(knowledge_base, baseline, inferred, origin, InferredContribution),
+    admitted(
+      knowledge_base,
+      baseline,
+      inferred,
+      origin,
+      InferredContribution,
+      types.CurrentInference,
+    ),
     params,
   )
   |> with_fresh_returned_operators(
@@ -2663,18 +2718,19 @@ fn admits(
   }
 }
 
-// The entries `admits` lets answer, each paired with `origin`.
+// The entries `admits` lets answer, each paired with `origin` and `lineage`.
 fn admitted(
   knowledge_base: KnowledgeBase,
   baseline: KnowledgeBase,
   entries: Dict(QualifiedName, EffectTerm),
   origin: LookupOrigin,
   kind: ContributionKind,
-) -> Dict(QualifiedName, #(EffectTerm, LookupOrigin)) {
+  lineage: types.Lineage,
+) -> Dict(QualifiedName, TermEntry) {
   dict.filter(entries, fn(name, term) {
     admits(knowledge_base, baseline, name, term, kind)
   })
-  |> with_origin(origin)
+  |> with_origin(origin, lineage)
 }
 
 // Whether a baseline answer from `origin` is one a direct path dependency's
@@ -2705,7 +2761,7 @@ fn consumer_declares_module(baseline: KnowledgeBase, module: String) -> Bool {
 // bounds with it.
 fn with_admitted_effects(
   knowledge_base: KnowledgeBase,
-  admitted: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  admitted: Dict(QualifiedName, TermEntry),
   params: Dict(QualifiedName, List(ParamBound)),
 ) -> KnowledgeBase {
   KnowledgeBase(
@@ -2735,7 +2791,11 @@ fn with_newly_loaded_modules(
       names_only_known_effects(effect_term.to_effect_set(term))
     })
   let winning =
-    over_catalog(knowledge_base.module_effects, dict.from_list(resolved))
+    over_catalog(
+      knowledge_base.module_effects,
+      dict.from_list(resolved),
+      module_entry_origin,
+    )
   let declared = set.from_list(dict.keys(winning))
   let #(standing, standing_bounds) =
     outside_declared_modules(
@@ -2933,7 +2993,11 @@ fn assume_bounds(
 pub type DepSpec {
   DepSpec(
     effects: Dict(QualifiedName, EffectTerm),
-    params: Dict(QualifiedName, List(ParamBound)),
+    // The bound lists of the spec's declaring `assume` lines, and of its
+    // `effects` lines for the names no `assume` line keys: each term's bounds
+    // come off the statement that wrote the term.
+    assumed_params: Dict(QualifiedName, List(ParamBound)),
+    inferred_params: Dict(QualifiedName, List(ParamBound)),
     // `where returns` clauses on the spec's `effects` lines, each with the
     // bound list scoping it.
     returns: Dict(QualifiedName, ScopedClause),
@@ -3103,7 +3167,13 @@ fn sampled_warning(
 
 // A dependency that states nothing: what a spec graded did not read answers.
 pub fn empty_dep_spec() -> DepSpec {
-  DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [])
+  DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), dict.new(), [], [])
+}
+
+// Every bound list a dependency spec pairs with a term, whichever kind of
+// statement wrote it. The two key disjoint names.
+pub fn dep_spec_params(dep: DepSpec) -> Dict(QualifiedName, List(ParamBound)) {
+  dict.merge(dep.inferred_params, dep.assumed_params)
 }
 
 // Run `read` over a load's spec, or hand back `absent` unchanged. A load with
@@ -3245,7 +3315,10 @@ fn dep_spec_from_file(file: types.GradedFile) -> DepSpec {
     // Bounds travel with their term, so both channels drop the same names:
     // a surviving term paired with bounds from another annotation is a
     // pairing no annotation wrote.
-    params: load_spec_params_from_file(file)
+    assumed_params: assume_bounds(annotation.extract_assumes(file))
+      |> drop_module_declared(declared_modules),
+    inferred_params: load_spec_params_from_file(file)
+      |> dict.drop(declared_function_names(annotation.extract_assumes(file)))
       |> drop_module_declared(declared_modules),
     returns: load_spec_returns_from_file(file),
     declared_returns: load_spec_assume_returns_from_file(file),
@@ -3382,7 +3455,7 @@ fn sanitize_dep_spec(
     effects: dict.filter(dep.effects, fn(name, _term) {
       !inferred_over_foreign(name)
     }),
-    params: dict.filter(dep.params, fn(name, _bounds) {
+    inferred_params: dict.filter(dep.inferred_params, fn(name, _bounds) {
       !inferred_over_foreign(name)
     }),
     returns: dict.filter(dep.returns, fn(name, _clause) {
@@ -3401,7 +3474,10 @@ fn sanitize_dep_spec(
 fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> AssumeTiers {
   let #(function_assumes, module_assumes) = split_assumes(dep.assumes, origin)
   #(
-    dict.merge(with_origin(dep.effects, origin), function_assumes),
+    dict.merge(
+      with_origin(dep.effects, origin, types.GeneratedLine),
+      function_assumes,
+    ),
     module_assumes,
   )
 }
@@ -3439,7 +3515,11 @@ pub fn with_path_dep_spec(
   let dep = sanitize_dep_spec(dep, knowledge_base.dependency_foreign)
   let #(decided, module_assumes) = decided_entries(dep, origin)
   let winning_modules =
-    over_catalog(knowledge_base.module_effects, module_assumes)
+    over_catalog(
+      knowledge_base.module_effects,
+      module_assumes,
+      module_entry_origin,
+    )
   // The modules this fold's declarations arbitrate over: the winners of the
   // module tier only — a module the consumer already declared is not this
   // dependency's to clear.
@@ -3450,14 +3530,15 @@ pub fn with_path_dep_spec(
       knowledge_base.param_bounds,
       declared,
     )
-  let winning = over_catalog(standing, decided)
+  let winning = over_catalog(standing, decided, term_entry_origin)
+  let params = dep_spec_params(dep)
   KnowledgeBase(
     ..knowledge_base,
     all_effects: dict.merge(standing, winning),
     param_bounds: dict.merge(
       standing_bounds,
       dict.map_values(winning, fn(name, _entry) {
-        dict.get(dep.params, name) |> result.unwrap([])
+        dict.get(params, name) |> result.unwrap([])
       }),
     ),
     module_effects: dict.merge(knowledge_base.module_effects, winning_modules),
@@ -3476,17 +3557,13 @@ pub fn with_path_dep_spec(
 // own: the names it loses are exactly the names the term map lost, so a term
 // and its bounds are dropped together off one key list.
 fn outside_declared_modules(
-  entries: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  entries: Dict(QualifiedName, TermEntry),
   param_bounds: Dict(QualifiedName, List(ParamBound)),
   declared: Set(String),
-) -> #(
-  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
-  Dict(QualifiedName, List(ParamBound)),
-) {
+) -> #(Dict(QualifiedName, TermEntry), Dict(QualifiedName, List(ParamBound))) {
   let cleared =
     dict.filter(entries, fn(name, entry) {
-      let #(_term, origin) = entry
-      is_catalog_origin(origin) && set.contains(declared, name.module)
+      is_catalog_origin(entry.origin) && set.contains(declared, name.module)
     })
     |> dict.keys
   #(dict.drop(entries, cleared), dict.drop(param_bounds, cleared))
@@ -3495,15 +3572,26 @@ fn outside_declared_modules(
 // The incoming entries a path dependency's spec may write over a knowledge-base
 // tier: those whose key nothing holds, and those whose key the catalog holds.
 fn over_catalog(
-  existing: Dict(k, #(EffectTerm, LookupOrigin)),
-  incoming: Dict(k, #(EffectTerm, LookupOrigin)),
-) -> Dict(k, #(EffectTerm, LookupOrigin)) {
+  existing: Dict(k, v),
+  incoming: Dict(k, v),
+  origin: fn(v) -> LookupOrigin,
+) -> Dict(k, v) {
   dict.filter(incoming, fn(key, _entry) {
     case dict.get(existing, key) {
       Error(Nil) -> True
-      Ok(#(_term, origin)) -> is_catalog_origin(origin)
+      Ok(entry) -> is_catalog_origin(origin(entry))
     }
   })
+}
+
+// The source a module-tier entry names.
+fn module_entry_origin(entry: #(EffectTerm, LookupOrigin)) -> LookupOrigin {
+  entry.1
+}
+
+// The source a function-tier entry names.
+fn term_entry_origin(entry: TermEntry) -> LookupOrigin {
+  entry.origin
 }
 
 // Whether an entry was written by the bundled catalog, directly or as the source
@@ -3600,7 +3688,7 @@ fn fold_named_returns(
 // base holds: every term already tagged with the package whose spec declared it.
 type Dependencies {
   Dependencies(
-    effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    effects: Dict(QualifiedName, TermEntry),
     params: Dict(QualifiedName, List(ParamBound)),
     returns: Dict(QualifiedName, ReturnedOperator),
     type_fields: List(#(FieldAnnotation, LookupOrigin)),
@@ -3650,7 +3738,7 @@ fn load_dependencies(
       let #(decided, module_assumes) = decided_entries(dep, origin)
       Dependencies(
         effects: dict.merge(acc.effects, decided),
-        params: dict.merge(acc.params, dep.params),
+        params: dict.merge(acc.params, dep_spec_params(dep)),
         returns: merge_returns(
           acc.returns,
           // Within one spec a declared summary answers for a name its own
@@ -3708,9 +3796,9 @@ fn priv_directory() -> Result(String, Nil)
 
 type CatalogAcc {
   CatalogAcc(
-    assume_effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    assume_effects: Dict(QualifiedName, TermEntry),
     module_effects: Dict(String, #(EffectTerm, LookupOrigin)),
-    poly_effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    poly_effects: Dict(QualifiedName, TermEntry),
     // The bounds of each tier, held apart and merged the way the terms beside
     // them are: a name's term and its bounds must come out of one file, or a
     // polymorphic term wins with another file's empty bounds beside it and its
@@ -3730,7 +3818,7 @@ pub fn load_catalog(
   catalog: List(CatalogFile),
   manifest_path: String,
 ) -> #(
-  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  Dict(QualifiedName, TermEntry),
   Dict(String, #(EffectTerm, LookupOrigin)),
   Dict(QualifiedName, List(ParamBound)),
   List(#(FieldAnnotation, LookupOrigin)),
@@ -3745,7 +3833,7 @@ pub fn load_catalog_with(
   manifest_path: String,
   reading: SpecReading,
 ) -> #(
-  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  Dict(QualifiedName, TermEntry),
   Dict(String, #(EffectTerm, LookupOrigin)),
   Dict(QualifiedName, List(ParamBound)),
   List(#(FieldAnnotation, LookupOrigin)),
@@ -3779,7 +3867,7 @@ fn read_catalog_files(
   selected: List(#(String, types.GradedFile)),
   reading: SpecReading,
 ) -> #(
-  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  Dict(QualifiedName, TermEntry),
   Dict(String, #(EffectTerm, LookupOrigin)),
   Dict(QualifiedName, List(ParamBound)),
   List(#(FieldAnnotation, LookupOrigin)),
@@ -3828,9 +3916,10 @@ fn fold_catalog_file(
   // are scoped like everyone else's. Merging with the new file second
   // keeps the later file winning on a clash, as folding per-annotation
   // did.
+  // Every line of a catalog file is written by hand.
   let file_poly_effects =
     load_spec_effects_from_file(graded_file)
-    |> with_origin(origin)
+    |> with_origin(origin, types.DeclaredLine)
   CatalogAcc(
     assume_effects: dict.merge(acc.assume_effects, function_assumes),
     module_effects: dict.merge(acc.module_effects, module_assumes),

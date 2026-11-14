@@ -29,7 +29,10 @@ fn function(
     bounds:,
     term:,
     returns: None,
-    source: answer.Entry(FunctionEntry(origin: CommittedSpec), types.NoFallback),
+    source: answer.Entry(
+      FunctionEntry(origin: CommittedSpec, lineage: types.GeneratedLine),
+      types.NoFallback,
+    ),
   )
 }
 
@@ -190,7 +193,10 @@ fn from(origin: types.LookupOrigin) -> answer.EffectAnswer {
     bounds: [],
     term: labels(["Stdout"]),
     returns: None,
-    source: answer.Entry(FunctionEntry(origin:), types.NoFallback),
+    source: answer.Entry(
+      FunctionEntry(origin:, lineage: types.DeclaredLine),
+      types.NoFallback,
+    ),
   )
 }
 
@@ -216,7 +222,10 @@ pub fn a_source_line_precedes_the_bounds_test() {
     term: labels(["Stdout"]),
     returns: None,
     source: answer.Entry(
-      FunctionEntry(origin: Catalog("gleam_stdlib")),
+      FunctionEntry(
+        origin: Catalog("gleam_stdlib"),
+        lineage: types.DeclaredLine,
+      ),
       types.NoFallback,
     ),
   )
@@ -304,7 +313,10 @@ fn with_clause(
     bounds:,
     term: labels(["Stdout"]),
     returns: Some(returns),
-    source: answer.Entry(FunctionEntry(origin: entry), types.NoFallback),
+    source: answer.Entry(
+      FunctionEntry(origin: entry, lineage: types.DeclaredLine),
+      types.NoFallback,
+    ),
   )
 }
 

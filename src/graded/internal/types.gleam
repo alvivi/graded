@@ -403,13 +403,28 @@ pub type LookupOrigin {
   FieldAssumeOrigin(source: LookupOrigin)
 }
 
+// Which kind of statement wrote a knowledge-base entry, kept apart from which
+// source or tier it came from: a dependency's spec holds lines of both written
+// kinds, and only the statement says which. A written line answers with its own
+// clauses or its kind's defaults; a generated line and this run's inference are
+// summaries of a body analysed under the same rules.
+pub type Lineage {
+  // An `assume` line of any shape, a bundled catalog line, or the wildcard
+  // line standing in for a refused one.
+  DeclaredLine
+  // An `effects` line an earlier `infer` wrote.
+  GeneratedLine
+  // This run's inference over source.
+  CurrentInference
+}
+
 // Which of the knowledge base's two maps answered a function lookup. Reported
 // by the lookup itself, so a caller that renders provenance can't drift out of
 // step with the branch order that produced the term.
 pub type EffectSource {
   // An entry keyed by the function itself, from any of the merged sources.
-  // `origin` names the source that wrote it.
-  FunctionEntry(origin: LookupOrigin)
+  // `origin` names the source that wrote it, `lineage` the kind of statement.
+  FunctionEntry(origin: LookupOrigin, lineage: Lineage)
   // The function's module carries `assume <module> : [...]`. Reached
   // only when nothing keys the function itself, so a per-function `assume` or a
   // catalog line for it takes precedence; it carries no per-function bounds.

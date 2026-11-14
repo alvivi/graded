@@ -547,7 +547,7 @@ pub fn a_tie_selects_one_file_for_both_paths_test() {
 
   // Each file declares the same function with an effect only it names, so the
   // effect the knowledge base answers with says which file the resolver folded.
-  let assert Ok(#(term, _origin)) =
+  let assert Ok(effects.TermEntry(term:, ..)) =
     dict.get(function_effects, types.QualifiedName("foo/x", "run"))
   let assert Ok(resolved) =
     ["Release", "Padded"]

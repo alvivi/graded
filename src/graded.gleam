@@ -1395,6 +1395,17 @@ pub fn context_placement_files(
   ctx.placement_files
 }
 
+// The knowledge base the context assembled for `directory` holds, under the
+// given latent-effect reading.
+@internal
+pub fn context_knowledge_base(
+  directory: String,
+  mode: types.LatMode,
+) -> Result(KnowledgeBase, GradedError) {
+  use ctx <- result.map(load_project_context(directory, mode))
+  ctx.knowledge_base
+}
+
 // Every custom type and alias the context assembled for `directory` holds.
 @internal
 pub fn context_type_definitions(
@@ -2124,14 +2135,14 @@ fn function_effect(
         returns:,
         source: answer.Entry(types.ModuleAssumeEntry(origin:), fallback:),
       ))
-    effects.Known(term, types.FunctionEntry(origin:)) ->
+    effects.Known(term, types.FunctionEntry(..) as source) ->
       Ok(answer.FunctionAnswer(
         name:,
         module:,
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
         returns:,
-        source: answer.Entry(types.FunctionEntry(origin:), fallback:),
+        source: answer.Entry(source, fallback:),
       ))
   }
 }
