@@ -1124,8 +1124,11 @@ fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
     types.Updated(base:, fields:, components:) ->
       BoundUpdated(base:, fields:, components:)
     types.Composite(elements:) -> BoundComposite(elements:)
-    LocalRef(..) | ConstructorRef | types.ReceiverPath(..) | OtherExpression ->
-      BoundOpaque
+    LocalRef(..)
+    | ConstructorRef
+    | types.ReceiverPath(..)
+    | OtherExpression
+    | types.Capture(..) -> BoundOpaque
   }
 }
 
@@ -1180,7 +1183,8 @@ fn unshadowed_options(
       | types.CallResult(..)
       | types.Updated(..)
       | types.Composite(..)
-      | OtherExpression -> option
+      | OtherExpression
+      | types.Capture(..) -> option
     }
   })
 }
@@ -1653,7 +1657,8 @@ fn resolve_constructor_field_call(
     | Ok(types.ReceiverPath(_))
     | Ok(types.Updated(..))
     | Ok(types.Composite(..))
-    | Ok(OtherExpression) -> untraceable(None)
+    | Ok(OtherExpression)
+    | Ok(types.Capture(..)) -> untraceable(None)
     // A label the construction did not wire. Under a `shadowed_module` this is
     // reachable only from `PartialConstruction`: `shadowed_receiver_has_field`
     // answers a `CompleteConstruction` from this same dict and sends a missing
@@ -2094,7 +2099,7 @@ fn classify_rhs_ref(
     // canonical path so a forwarded field var re-keys onto `config.options`
     // (fixed now, immune to later rebinds), not the opaque alias.
     types.ReceiverPath(path) -> bind_receiver_path(path, env)
-    ConstructorRef | OtherExpression -> BoundOpaque
+    ConstructorRef | OtherExpression | types.Capture(..) -> BoundOpaque
   }
 }
 
@@ -2903,7 +2908,8 @@ fn extract_expression_call(
     | Constructed(..)
     | types.Updated(..)
     | types.Composite(..)
-    | OtherExpression ->
+    | OtherExpression
+    | types.Capture(..) ->
       merge(base, ExtractResult(..empty(), unknown_apps: [span]))
   }
 }
@@ -2947,8 +2953,9 @@ type ClosureCallSite {
   CalledInPlace
 }
 
-// How calling each option reads, in the scope `env` of the `case` expression. A
-// nested `case` contributes its own options.
+// How calling each option reads, in the scope `env` of the `case` expression,
+// each distinct call once. A choice holds no choice (see `alternatives`); one
+// built elsewhere contributes its own options.
 fn option_calls(options: List(ArgumentValue), env: Env) -> List(OptionCall) {
   list.flat_map(options, fn(option) {
     case option {
@@ -2966,9 +2973,41 @@ fn option_calls(options: List(ArgumentValue), env: Env) -> List(OptionCall) {
       | Constructed(..)
       | types.Updated(..)
       | types.Composite(..)
-      | OtherExpression -> [UnknownOption]
+      | OtherExpression
+      | types.Capture(..) -> [UnknownOption]
     }
   })
+  |> distinct_calls
+}
+
+// `calls` with each call listed once, first occurrence kept, told apart by the
+// written key of what it calls.
+fn distinct_calls(calls: List(OptionCall)) -> List(OptionCall) {
+  let #(kept, _seen) =
+    list.fold(calls, #([], set.new()), fn(acc, call) {
+      let #(kept, seen) = acc
+      let key = call_key(call)
+      case seen_key(seen, key) {
+        True -> acc
+        False -> #([call, ..kept], insert_key(seen, key))
+      }
+    })
+  list.reverse(kept)
+}
+
+fn call_key(call: OptionCall) -> Result(List(KeyPart), Nil) {
+  case call {
+    LocalOption(name, scope) -> Ok([Tag(0), Name(name), scope_part(scope)])
+    FunctionOption(name) -> Ok([Tag(1), Name(name.module), Name(name.function)])
+    ProducerOption(callee, args) ->
+      written_key(types.CallResult(callee, args))
+      |> result.map(fn(key) { [Tag(2), ..key] })
+    ClosureOption(params, captures, body) ->
+      written_key(types.Closure(params, captures, body))
+      |> result.map(fn(key) { [Tag(3), ..key] })
+    SilentOption -> Ok([Tag(4)])
+    UnknownOption -> Ok([Tag(5)])
+  }
 }
 
 // A bare name in a branch: a caller parameter, a closure's own parameter, or a
@@ -3180,7 +3219,8 @@ fn field_value(value: ArgumentValue, env: Env) -> ArgumentValue {
     | Constructed(..)
     | types.Updated(..)
     | types.Composite(..)
-    | OtherExpression -> value
+    | OtherExpression
+    | types.Capture(..) -> value
   }
 }
 
@@ -3310,6 +3350,8 @@ fn classify_expression(
       )
     glance.Tuple(elements:, ..) ->
       types.Composite(list.map(elements, expression_component(_, context, env)))
+    // A scalar literal is a value with no component that could hold a function.
+    glance.Int(..) | glance.Float(..) | glance.String(..) -> types.Composite([])
     _ -> OtherExpression
   }
 }
@@ -3769,7 +3811,8 @@ fn classify_call_producer(
     | Constructed(..)
     | types.Updated(..)
     | types.Composite(..)
-    | OtherExpression -> OtherExpression
+    | OtherExpression
+    | types.Capture(..) -> OtherExpression
   }
 }
 
@@ -3781,10 +3824,21 @@ fn classify_case_options(
   context: ImportContext,
   env: Env,
 ) -> types.ArgumentValue {
-  let options =
+  // Each branch beside the binding its body names, where it is a bare name a
+  // binding covers: two branches naming one binding denote one value.
+  let named =
     list.map(clauses, fn(clause) {
-      classify_expression(clause.body, context, env)
+      let name = case clause.body {
+        glance.Variable(name:, ..) ->
+          case env_get(env, name) {
+            Ok(_) -> Some(name)
+            Error(Nil) -> None
+          }
+        _ -> None
+      }
+      #(name, classify_expression(clause.body, context, env))
     })
+  let options = list.map(named, fn(option) { option.1 })
   // `LocalRef` is admitted: a same-module function resolves via the function
   // map at the use site, and a genuinely opaque local just lifts to `[Unknown]`
   // (sound). Only constructors and unclassifiable expressions disqualify a branch.
@@ -3803,13 +3857,279 @@ fn classify_case_options(
         | Constructed(..)
         | types.Updated(..)
         | types.Composite(..)
-        | OtherExpression -> False
+        | OtherExpression
+        | types.Capture(..) -> False
       }
     })
   case all_function_like {
-    True -> types.Choice(options)
+    True -> types.Choice(alternatives(named))
     False -> OtherExpression
   }
+}
+
+// How many alternatives one choice keeps before what is left is an
+// untraceable value.
+const choice_budget = 1000
+
+// The distinct alternatives of a `case`'s branches, first occurrence kept: a
+// branch that is itself a choice contributes its alternatives, which are
+// distinct already, so a choice never holds another and each alternative is
+// listed once however many branches reach it. An alternative past the first
+// `choice_budget` distinct ones makes the rest one untraceable value; one
+// already kept is just kept.
+fn alternatives(
+  options: List(#(Option(String), ArgumentValue)),
+) -> List(ArgumentValue) {
+  let #(#(kept, _seen, _count), _names) =
+    list.fold(options, #(#([], set.new(), 0), set.new()), fn(acc, entry) {
+      let #(acc, names) = acc
+      case entry {
+        // A branch naming a binding an earlier branch named adds nothing,
+        // however long the value's written key runs.
+        #(Some(name), option) ->
+          case set.contains(names, name) {
+            True -> #(acc, names)
+            False -> #(keep_branch(acc, option), set.insert(names, name))
+          }
+        #(None, option) -> #(keep_branch(acc, option), names)
+      }
+    })
+  list.reverse(kept)
+}
+
+fn keep_branch(
+  acc: #(List(ArgumentValue), Set(List(KeyPart)), Int),
+  option: ArgumentValue,
+) -> #(List(ArgumentValue), Set(List(KeyPart)), Int) {
+  case option {
+    types.Choice(nested) -> list.fold(nested, acc, keep_alternative)
+    _ -> keep_alternative(acc, option)
+  }
+}
+
+// `leaf` beside the alternatives kept so far, where none of them is it; past
+// `choice_budget` of them, one untraceable value in its place.
+fn keep_alternative(
+  acc: #(List(ArgumentValue), Set(List(KeyPart)), Int),
+  leaf: ArgumentValue,
+) -> #(List(ArgumentValue), Set(List(KeyPart)), Int) {
+  let #(kept, seen, count) = acc
+  let key = written_key(leaf)
+  use <- bool.guard(when: seen_key(seen, key), return: acc)
+  case count >= choice_budget {
+    False -> #([leaf, ..kept], insert_key(seen, key), count + 1)
+    True -> {
+      let other = written_key(OtherExpression)
+      use <- bool.guard(when: seen_key(seen, other), return: acc)
+      #([OtherExpression, ..kept], insert_key(seen, other), count)
+    }
+  }
+}
+
+// What tells one value from another as it is written: each composite by the
+// spans it was written at, each closure by its parameters, the start of its
+// body and the binders it captures, and every value one holds by the same key.
+// `Error` where the key would run past `key_budget` parts: such a value is
+// told apart from every other.
+type KeyPart {
+  Tag(Int)
+  Name(String)
+  Offset(Int)
+}
+
+const key_budget = 256
+
+fn written_key(value: ArgumentValue) -> Result(List(KeyPart), Nil) {
+  value_parts(#([], key_budget), value)
+  |> result.map(fn(acc) { list.reverse(acc.0) })
+}
+
+fn seen_key(seen: Set(List(KeyPart)), key: Result(List(KeyPart), Nil)) -> Bool {
+  case key {
+    Ok(key) -> set.contains(seen, key)
+    Error(Nil) -> False
+  }
+}
+
+fn insert_key(
+  seen: Set(List(KeyPart)),
+  key: Result(List(KeyPart), Nil),
+) -> Set(List(KeyPart)) {
+  case key {
+    Ok(key) -> set.insert(seen, key)
+    Error(Nil) -> seen
+  }
+}
+
+fn emit(
+  acc: #(List(KeyPart), Int),
+  part: KeyPart,
+) -> Result(#(List(KeyPart), Int), Nil) {
+  case acc.1 {
+    0 -> Error(Nil)
+    left -> Ok(#([part, ..acc.0], left - 1))
+  }
+}
+
+fn emit_all(
+  acc: #(List(KeyPart), Int),
+  parts: List(KeyPart),
+) -> Result(#(List(KeyPart), Int), Nil) {
+  list.try_fold(parts, acc, emit)
+}
+
+// Each of `items` after its count, by `parts_of`.
+fn each_parts(
+  acc: #(List(KeyPart), Int),
+  items: List(a),
+  parts_of: fn(#(List(KeyPart), Int), a) -> Result(#(List(KeyPart), Int), Nil),
+) -> Result(#(List(KeyPart), Int), Nil) {
+  use acc <- result.try(emit(acc, Offset(list.length(items))))
+  list.try_fold(items, acc, parts_of)
+}
+
+fn value_parts(
+  acc: #(List(KeyPart), Int),
+  value: ArgumentValue,
+) -> Result(#(List(KeyPart), Int), Nil) {
+  case value {
+    FunctionRef(name:) ->
+      emit_all(acc, [Tag(0), Name(name.module), Name(name.function)])
+    LocalRef(name:) -> emit_all(acc, [Tag(1), Name(name)])
+    ConstructorRef -> emit(acc, Tag(2))
+    types.Closure(params:, captures:, body:) -> {
+      use acc <- result.try(emit_all(acc, [Tag(3), Offset(body_start(body))]))
+      use acc <- result.try(
+        each_parts(acc, params, fn(acc, param) { emit(acc, Name(param)) }),
+      )
+      each_parts(acc, captures, captured_parts)
+    }
+    types.Choice(options:) -> {
+      use acc <- result.try(emit(acc, Tag(4)))
+      each_parts(acc, options, value_parts)
+    }
+    types.Capture(span:, target:, hole:, label:, arguments:, captures:, ..) -> {
+      use acc <- result.try(
+        emit_all(acc, [
+          Tag(5),
+          Offset(span.start),
+          Offset(span.end),
+          Offset(hole),
+        ]),
+      )
+      use acc <- result.try(emit(acc, label_part(label)))
+      use acc <- result.try(value_parts(acc, target))
+      use acc <- result.try(each_parts(acc, arguments, argument_parts))
+      each_parts(acc, captures, captured_parts)
+    }
+    types.ReturnedOperator(callee:, args:) -> {
+      use acc <- result.try(
+        emit_all(acc, [Tag(6), Name(callee.module), Name(callee.function)]),
+      )
+      each_parts(acc, args, argument_parts)
+    }
+    types.CallResult(callee:, args:) -> {
+      use acc <- result.try(
+        emit_all(acc, [Tag(7), Name(callee.module), Name(callee.function)]),
+      )
+      each_parts(acc, args, argument_parts)
+    }
+    types.ReceiverPath(path:) -> emit_all(acc, [Tag(8), Name(path)])
+    Constructed(fields:, components:, coverage:) -> {
+      use acc <- result.try(
+        emit_all(acc, [
+          Tag(9),
+          Tag(case coverage {
+            types.WholeValue -> 0
+            types.PartialValue -> 1
+          }),
+        ]),
+      )
+      use acc <- result.try(fields_parts(acc, fields))
+      each_parts(acc, components, component_parts)
+    }
+    types.Updated(base:, fields:, components:) -> {
+      use acc <- result.try(emit(acc, Tag(10)))
+      use acc <- result.try(value_parts(acc, base))
+      use acc <- result.try(fields_parts(acc, fields))
+      each_parts(acc, components, component_parts)
+    }
+    types.Composite(elements:) -> {
+      use acc <- result.try(emit(acc, Tag(11)))
+      each_parts(acc, elements, component_parts)
+    }
+    OtherExpression -> emit(acc, Tag(12))
+  }
+}
+
+fn scope_part(scope: types.LocalScope) -> KeyPart {
+  case scope {
+    types.LexicalBinding -> Tag(-2)
+    types.ModuleDefinition -> Tag(-1)
+  }
+}
+
+// Where a closure's body starts, or -1 for an empty body.
+fn body_start(body: List(glance.Statement)) -> Int {
+  case body {
+    [glance.Use(location:, ..), ..]
+    | [glance.Assignment(location:, ..), ..]
+    | [glance.Assert(location:, ..), ..] -> location.start
+    [glance.Expression(expression), ..] -> expression.location.start
+    [] -> -1
+  }
+}
+
+fn label_part(label: Option(String)) -> KeyPart {
+  case label {
+    Some(label) -> Name(label)
+    None -> Tag(-1)
+  }
+}
+
+fn captured_parts(
+  acc: #(List(KeyPart), Int),
+  captured: #(String, ArgumentValue),
+) -> Result(#(List(KeyPart), Int), Nil) {
+  use acc <- result.try(emit(acc, Name(captured.0)))
+  value_parts(acc, captured.1)
+}
+
+fn argument_parts(
+  acc: #(List(KeyPart), Int),
+  argument: types.CallArgument,
+) -> Result(#(List(KeyPart), Int), Nil) {
+  use acc <- result.try(
+    emit_all(acc, [
+      Offset(argument.position),
+      label_part(argument.label),
+      Offset(argument.span.start),
+      Offset(argument.span.end),
+    ]),
+  )
+  value_parts(acc, argument.value)
+}
+
+fn component_parts(
+  acc: #(List(KeyPart), Int),
+  component: types.Component,
+) -> Result(#(List(KeyPart), Int), Nil) {
+  use acc <- result.try(
+    emit_all(acc, [Offset(component.span.start), Offset(component.span.end)]),
+  )
+  value_parts(acc, component.value)
+}
+
+fn fields_parts(
+  acc: #(List(KeyPart), Int),
+  fields: Dict(String, ArgumentValue),
+) -> Result(#(List(KeyPart), Int), Nil) {
+  dict.to_list(fields)
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> each_parts(acc, _, fn(acc, field) {
+    use acc <- result.try(emit(acc, Name(field.0)))
+    value_parts(acc, field.1)
+  })
 }
 
 // Return provenance
@@ -3934,7 +4254,8 @@ fn provenance_of_value(
     | types.CallResult(..)
     | types.Updated(..)
     | types.Composite(..)
-    | OtherExpression -> types.Opaque
+    | OtherExpression
+    | types.Capture(..) -> types.Opaque
   }
 }
 
@@ -4144,7 +4465,8 @@ fn param_rooted(
     | Constructed(..)
     | types.Updated(..)
     | types.Composite(..)
-    | OtherExpression -> Error(Nil)
+    | OtherExpression
+    | types.Capture(..) -> Error(Nil)
   }
 }
 
@@ -4209,7 +4531,8 @@ fn field_provenance_of_value(
         | types.ReceiverPath(..)
         | types.Updated(..)
         | types.Composite(..)
-        | OtherExpression -> types.FieldOpaque
+        | OtherExpression
+        | types.Capture(..) -> types.FieldOpaque
       }
   }
 }

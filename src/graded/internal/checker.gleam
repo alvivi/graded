@@ -4031,6 +4031,7 @@ fn weigh_wired_field(
     | types.Updated(..), _
     | types.Composite(..), _
     | types.OtherExpression, _
+    | types.Capture(..), _
     -> False
   }
   case from_parameter {
@@ -4314,7 +4315,8 @@ fn traceable_field_value(
     | types.Constructed(..)
     | types.Updated(..)
     | types.Composite(..)
-    | types.OtherExpression -> False
+    | types.OtherExpression
+    | types.Capture(..) -> False
   }
 }
 
@@ -6247,7 +6249,8 @@ fn forwarded_var_binding(
     | types.CallResult(..)
     | types.Updated(..)
     | types.Composite(..)
-    | types.OtherExpression ->
+    | types.OtherExpression
+    | types.Capture(..) ->
       case
         forwarded_binding_term(
           base,
@@ -6368,7 +6371,7 @@ fn concrete_field_effect(
     // call-result field value, which `value_field_effect` grounds via the same
     // per-value resolution the direct-read path uses. Residual variables ground
     // to `[Unknown]`; never a narrower set than the true effect.
-    None, Some(effects) -> Some(#(concretize(effects), origin))
+    None, Some(effects) -> Some(#(effect_term.close(effects), origin))
   }
   #(bound, memo)
 }
@@ -6509,7 +6512,8 @@ fn grounded_receiver(
     | types.ReceiverPath(_)
     | types.Constructed(..)
     | types.Composite(..)
-    | types.OtherExpression -> Ok(value)
+    | types.OtherExpression
+    | types.Capture(..) -> Ok(value)
   }
 }
 
@@ -6687,7 +6691,8 @@ fn value_at_path(
         | types.ReturnedOperator(..)
         | types.CallResult(..)
         | types.Composite(..)
-        | types.OtherExpression -> Error(Nil)
+        | types.OtherExpression
+        | types.Capture(..) -> Error(Nil)
       }
     }
   }
@@ -8185,7 +8190,7 @@ fn resolve_argument_effects(
     types.Constructed(..) -> effect_term.unknown()
     types.Updated(..) -> effect_term.unknown()
     types.Composite(..) -> effect_term.unknown()
-    types.OtherExpression -> effect_term.unknown()
+    types.OtherExpression | types.Capture(..) -> effect_term.unknown()
   }
 }
 
@@ -9340,8 +9345,8 @@ fn resolve_field_effect(
   {
     False, _ -> #(field_effect.effects, fallback, memo)
     True, None -> #(
-      concretize(field_effect.effects),
-      types.map_fallback(fallback, concretize),
+      effect_term.close(field_effect.effects),
+      types.map_fallback(fallback, effect_term.close),
       memo,
     )
     True, Some(source) -> {
@@ -9357,7 +9362,9 @@ fn resolve_field_effect(
           lift_operator_arg,
           memo,
         )
-      let bind = fn(term) { concretize(effect_term.subst(term, bindings)) }
+      let bind = fn(term) {
+        effect_term.close(effect_term.subst(term, bindings))
+      }
       #(bind(field_effect.effects), types.map_fallback(fallback, bind), memo)
     }
   }
@@ -9384,7 +9391,7 @@ fn is_operator_valued(term: EffectTerm) -> Bool {
 // [p1:=a1]`. A first-order field's binder is unused, so the result is just its
 // body. Leftover binders (fewer args than params) leave the operator partially
 // applied → `[Unknown]` (the conservative collapse in `to_effect_set`). Any
-// variable still free after application is `concretize`d to `[Unknown]`, as in
+// variable still free after application is closed to `[Unknown]`, as in
 // the non-operator branch — a field call has no caller to propagate vars to.
 //
 // A field built at several construction sites is a *union* of operators
@@ -9416,8 +9423,8 @@ fn apply_field_operator(
         }
       })
       |> types.TUnion
-      |> concretize
-    _ -> concretize(apply_args(operator, arg_terms))
+      |> effect_term.close
+    _ -> effect_term.close(apply_args(operator, arg_terms))
   }
 }
 
@@ -9425,20 +9432,6 @@ fn apply_field_operator(
 // `TApp` spine the reducer β-reduces.
 fn apply_args(operator: EffectTerm, arg_terms: List(EffectTerm)) -> EffectTerm {
   list.fold(arg_terms, operator, fn(acc, arg) { types.TApp(acc, arg) })
-}
-
-// Collapse any effect variables left after substitution to `Unknown`, so an
-// unbound field effect never surfaces with free variables. (Unlike a regular
-// call, a field whose variables can't be bound has no caller to propagate them
-// to, so the conservative `[Unknown]` is the right answer.)
-fn concretize(term: EffectTerm) -> EffectTerm {
-  let bindings =
-    term
-    |> effect_term.free_vars()
-    |> set.fold(dict.new(), fn(d, var) {
-      dict.insert(d, var, effect_term.unknown())
-    })
-  effect_term.normalize(effect_term.subst(term, bindings))
 }
 
 // girard's reading of an ambiguous call
