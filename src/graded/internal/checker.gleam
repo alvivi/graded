@@ -4020,6 +4020,7 @@ fn weigh_wired_field(
     | types.ReceiverPath(..), _
     | types.Constructed(..), _
     | types.Updated(..), _
+    | types.Composite(..), _
     | types.OtherExpression, _
     -> False
   }
@@ -4303,6 +4304,7 @@ fn traceable_field_value(
     | types.ReceiverPath(..)
     | types.Constructed(..)
     | types.Updated(..)
+    | types.Composite(..)
     | types.OtherExpression -> False
   }
 }
@@ -5327,7 +5329,7 @@ fn collect_view_effects(
       let closure = types.Closure(op.params, op.captures, op.body)
       let #(operator, memo) =
         operator_term_for_argument(
-          types.CallArgument(position: 0, label: None, value: closure),
+          closure,
           positions,
           knowledge_base,
           param_bounds,
@@ -5377,7 +5379,7 @@ fn collect_view_effects(
       let closure = types.Closure(op.params, op.captures, op.body)
       let #(operator, memo) =
         operator_term_for_argument(
-          types.CallArgument(position: 0, label: None, value: closure),
+          closure,
           positions,
           knowledge_base,
           param_bounds,
@@ -5456,7 +5458,7 @@ fn operator_argument_effect(
         | types.ReturnedOperator(..)
         | types.CallResult(..) ->
           operator_term_for_argument(
-            arg,
+            arg.value,
             nested_positions,
             knowledge_base,
             caller_param_bounds,
@@ -5465,7 +5467,11 @@ fn operator_argument_effect(
             memo,
           )
         _ -> #(
-          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+          resolve_argument_effects(
+            arg.value,
+            knowledge_base,
+            caller_param_bounds,
+          ),
           memo,
         )
       }
@@ -5616,13 +5622,17 @@ fn first_order_arg_effect(
       case lifted {
         Ok(operator) -> #(discharge_operator(operator), memo)
         Error(Nil) -> #(
-          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+          resolve_argument_effects(
+            arg.value,
+            knowledge_base,
+            caller_param_bounds,
+          ),
           memo,
         )
       }
     }
     _, _ -> #(
-      resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+      resolve_argument_effects(arg.value, knowledge_base, caller_param_bounds),
       memo,
     )
   }
@@ -6227,6 +6237,7 @@ fn forwarded_var_binding(
     | types.Constructed(..)
     | types.CallResult(..)
     | types.Updated(..)
+    | types.Composite(..)
     | types.OtherExpression ->
       case
         forwarded_binding_term(
@@ -6473,11 +6484,11 @@ fn grounded_receiver(
     // keeps the overlay as-is, so an inherited field over an untraceable base
     // stays `[Unknown]` exactly as before. Chained builders unwrap one layer per
     // step.
-    types.Updated(base:, fields:) ->
+    types.Updated(base:, fields:, components:) ->
       case
         grounded_receiver(base, function_map, context, knowledge_base, registry)
       {
-        Ok(grounded) -> Ok(types.Updated(base: grounded, fields:))
+        Ok(grounded) -> Ok(types.Updated(base: grounded, fields:, components:))
         Error(Nil) -> Ok(value)
       }
     types.FunctionRef(_)
@@ -6487,7 +6498,8 @@ fn grounded_receiver(
     | types.Choice(_)
     | types.ReturnedOperator(..)
     | types.ReceiverPath(_)
-    | types.Constructed(_)
+    | types.Constructed(..)
+    | types.Composite(..)
     | types.OtherExpression -> Ok(value)
   }
 }
@@ -6512,15 +6524,14 @@ fn reorder_args_by_signature(
   ))
   let sorted =
     list.sort(params, fn(a, b) { int.compare(a.position, b.position) })
-  use values <- result.map(
+  use arguments <- result.map(
     list.try_map(sorted, fn(param) {
       argument_for_parameter(param, args)
       |> option.to_result(Nil)
-      |> result.map(fn(arg) { arg.value })
     }),
   )
-  list.index_map(values, fn(value, position) {
-    types.CallArgument(position:, label: None, value:)
+  list.index_map(arguments, fn(arg, position) {
+    types.CallArgument(position:, label: None, value: arg.value, span: arg.span)
   })
 }
 
@@ -6542,7 +6553,13 @@ fn ground_provenance(
     }
     types.Build(fields) -> {
       use built <- result.map(substitute_build_fields(fields, args))
-      types.Constructed(fields: built)
+      // The summary traces the fields it can, not every field the record
+      // holds, so its components are not the whole value.
+      types.Constructed(
+        fields: built,
+        components: [],
+        coverage: types.PartialValue,
+      )
     }
     types.Join(branches) -> {
       use values <- result.try(
@@ -6639,7 +6656,7 @@ fn value_at_path(
         Error(Nil) -> #(tail, "")
       }
       case value {
-        types.Constructed(fields) -> {
+        types.Constructed(fields:, ..) -> {
           use wired <- result.try(dict.get(fields, field))
           value_at_path(wired, rest)
         }
@@ -6647,7 +6664,7 @@ fn value_at_path(
         // field takes its replacement; any other falls through to the base —
         // without requiring the base to be traceable, so an updated field
         // resolves even over an opaque base.
-        types.Updated(base, fields) ->
+        types.Updated(base:, fields:, ..) ->
           case dict.get(fields, field) {
             Ok(wired) -> value_at_path(wired, rest)
             Error(Nil) -> value_at_path(base, tail)
@@ -6660,6 +6677,7 @@ fn value_at_path(
         | types.Choice(_)
         | types.ReturnedOperator(..)
         | types.CallResult(..)
+        | types.Composite(..)
         | types.OtherExpression -> Error(Nil)
       }
     }
@@ -6734,7 +6752,8 @@ fn auto_bounds_from_registry(
             types.Closure(_, _, _)
             | types.Choice(_)
             | types.ReceiverPath(_)
-            | types.Constructed(_)
+            | types.Constructed(..)
+            | types.Composite(..)
             | types.OtherExpression -> Error(Nil)
             _ -> Ok(synthesized_bound_key(params, param))
           }
@@ -6807,7 +6826,7 @@ fn bind_variables(
             ..,
           )) ->
             operator_term_for_argument(
-              arg,
+              arg.value,
               callback_positions,
               knowledge_base,
               caller_param_bounds,
@@ -6853,7 +6872,7 @@ fn bind_variables(
 // over exactly those parameters. Anything else falls back to its flat effect
 // (leaving the application stuck → `[Unknown]`).
 fn operator_term_for_argument(
-  arg: types.CallArgument,
+  value: types.ArgumentValue,
   positions: List(Int),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
@@ -6862,7 +6881,7 @@ fn operator_term_for_argument(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  case arg.value {
+  case value {
     types.FunctionRef(name) -> {
       let body = effects.declared_effects(knowledge_base, name)
       // Abstract over `g`'s callback params in declaration order — a discarded
@@ -6889,7 +6908,7 @@ fn operator_term_for_argument(
         list.map_fold(options, memo, fn(memo, option) {
           let #(op, memo) =
             operator_term_for_argument(
-              types.CallArgument(..arg, value: option),
+              option,
               positions,
               knowledge_base,
               caller_param_bounds,
@@ -6902,11 +6921,11 @@ fn operator_term_for_argument(
       #(join_operators(operators), memo)
     }
     _ -> {
-      let #(lifted, memo) = lift_operator_arg(arg.value, positions, memo)
+      let #(lifted, memo) = lift_operator_arg(value, positions, memo)
       case lifted {
         Ok(operator) -> #(operator, memo)
         Error(Nil) -> #(
-          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+          resolve_argument_effects(value, knowledge_base, caller_param_bounds),
           memo,
         )
       }
@@ -7507,7 +7526,7 @@ fn compute_view_returned_operator(
         )
       let #(operator, memo) =
         operator_term_for_argument(
-          types.CallArgument(position: 0, label: None, value:),
+          value,
           positions,
           knowledge_base,
           producer_bounds,
@@ -8126,11 +8145,11 @@ fn param_info(
 // matching a caller param bound (user-declared or auto-detected fn-typed) →
 // that bound's effects; otherwise [Unknown].
 fn resolve_argument_effects(
-  arg: types.CallArgument,
+  value: types.ArgumentValue,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
 ) -> EffectTerm {
-  case arg.value {
+  case value {
     types.FunctionRef(name) -> effects.declared_effects(knowledge_base, name)
     types.ConstructorRef -> effect_term.pure()
     types.LocalRef(name) ->
@@ -8154,8 +8173,9 @@ fn resolve_argument_effects(
     // A constructed record or record-update overlay contributes no callable
     // effect in a first-order position; field forwarding handles it at the
     // receiver argument instead.
-    types.Constructed(_) -> effect_term.unknown()
+    types.Constructed(..) -> effect_term.unknown()
     types.Updated(..) -> effect_term.unknown()
+    types.Composite(..) -> effect_term.unknown()
     types.OtherExpression -> effect_term.unknown()
   }
 }
@@ -9374,7 +9394,9 @@ fn apply_field_operator(
   let arg_terms =
     args
     |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
-    |> list.map(resolve_argument_effects(_, knowledge_base, caller_param_bounds))
+    |> list.map(fn(arg) {
+      resolve_argument_effects(arg.value, knowledge_base, caller_param_bounds)
+    })
   case operator {
     types.TUnion(members) ->
       members

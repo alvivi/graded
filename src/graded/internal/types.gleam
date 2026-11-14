@@ -612,7 +612,16 @@ pub type ArgumentValue {
   // it, so call-site field forwarding can re-key a callee field-effect variable
   // (`o.resolver`) onto the caller parameter the field is wired to. Opaque
   // (`[Unknown]`) everywhere except call-site field forwarding.
-  Constructed(fields: Dict(String, ArgumentValue))
+  //
+  // `components` is every argument the construction was given, labelled or
+  // not, each with its span; `coverage` says whether they are the whole value.
+  // A factory view is whole only where the factory wires every field of the
+  // record from its own parameters.
+  Constructed(
+    fields: Dict(String, ArgumentValue),
+    components: List(Component),
+    coverage: ValueCoverage,
+  )
   // A call whose result is a record/value (not a returned function): the
   // receiver of a forwarding site, e.g. `inner(get_options(config))`. `callee`
   // names the function (with the `""` same-module sentinel); `args` are the
@@ -626,7 +635,17 @@ pub type ArgumentValue {
   // — an updated field takes its replacement value, any other field falls
   // through to `base` — so the base need not be traceable to resolve an updated
   // field. Composes: chained builders nest `Updated`s.
-  Updated(base: ArgumentValue, fields: Dict(String, ArgumentValue))
+  //
+  // `components` is the base and every replacement, each with its span: what
+  // the overlay can hold, whatever it replaced.
+  Updated(
+    base: ArgumentValue,
+    fields: Dict(String, ArgumentValue),
+    components: List(Component),
+  )
+  // A list or tuple literal: every element with its span. A list's spread
+  // tail is one more element, holding whatever the tail list holds.
+  Composite(elements: List(Component))
   // Anything else (a computed expression, literal, etc.). Effects come from
   // the enclosing walk; at the argument level we have no concrete function to
   // propagate.
@@ -668,7 +687,27 @@ pub type FieldProvenance {
 // expression is implicitly position 0 and explicit arguments shift up).
 // `label` is `Some(name)` for labeled arguments, `None` otherwise.
 pub type CallArgument {
-  CallArgument(position: Int, label: Option(String), value: ArgumentValue)
+  CallArgument(
+    position: Int,
+    label: Option(String),
+    value: ArgumentValue,
+    // Where the argument expression is written: what girard keys its type by.
+    span: Span,
+  )
+}
+
+// One component of a composite value: its classification, and the span girard
+// keys its type by.
+pub type Component {
+  Component(span: Span, value: ArgumentValue)
+}
+
+// Whether a value's components are all it holds.
+pub type ValueCoverage {
+  WholeValue
+  // Some of what the value holds was written where this site cannot see it: a
+  // field a factory fixes in its own body.
+  PartialValue
 }
 
 // One construction of a custom type in a function body: which constructor was
@@ -801,6 +840,9 @@ pub type FactorySignature {
     fields: Dict(String, Int),
     param_labels: Dict(String, Int),
     constructor: BuiltConstructor,
+    // Whether the record a call builds holds the call's arguments and nothing
+    // the factory fixes in its own body.
+    coverage: ValueCoverage,
   )
 }
 

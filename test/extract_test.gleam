@@ -2023,3 +2023,218 @@ pub fn target(runner: Runner) -> Nil {
 }",
   )
 }
+
+// Complete argument values
+//
+// Every argument carries the span girard keys its type by. A construction
+// keeps every argument it was given, labelled or not, beside the labelled
+// view; a list or tuple literal keeps its elements; a record update keeps its
+// base and replacements; a factory view says whether it is the whole value.
+
+// The span of the first occurrence of `text` in `src`.
+fn span_of(src: String, text: String) -> glance.Span {
+  span_within(src, text, text)
+}
+
+// The span of the first occurrence of `text` inside the first occurrence of
+// `around` in `src`.
+fn span_within(src: String, around: String, text: String) -> glance.Span {
+  let assert Ok(#(before, _)) = string.split_once(src, around)
+  let assert Ok(#(inner, _)) = string.split_once(around, text)
+  let start = string.byte_size(before) + string.byte_size(inner)
+  glance.Span(start, start + string.byte_size(text))
+}
+
+// The arguments recorded for the one resolved call `target` makes, in
+// position order, with `target`'s parameters and the module's factories in
+// scope.
+fn call_arguments(src: String) -> List(types.CallArgument) {
+  let #(function, context) = target_with_factories(src)
+  let result = extract.extract_function_calls(function, context)
+  let assert [call] = result.resolved
+  let assert Ok(args) = dict.get(result.call_args, extract.span_key(call.span))
+  list.sort(args, fn(a, b) { int.compare(a.position, b.position) })
+}
+
+pub fn argument_spans_cover_every_spelling_test() {
+  let src =
+    "import helper
+pub fn target(cb) { helper.apply(first, times: 1 + 2, cb:) }"
+  call_arguments(src)
+  |> list.map(fn(arg) { arg.span })
+  |> should.equal([
+    span_of(src, "first"),
+    span_of(src, "1 + 2"),
+    span_of(src, "cb:"),
+  ])
+}
+
+pub fn a_piped_argument_keeps_its_own_span_test() {
+  let src =
+    "import helper
+pub fn target(xs) { xs |> helper.run(42) }"
+  call_arguments(src)
+  |> list.map(fn(arg) { #(arg.position, arg.span) })
+  |> should.equal([
+    #(0, span_within(src, "xs |>", "xs")),
+    #(1, span_of(src, "42")),
+  ])
+}
+
+pub fn a_construction_keeps_its_unlabelled_arguments_test() {
+  let src =
+    "import helper
+pub type Mixed { Mixed(fn() -> Nil, keep: fn() -> Nil) }
+fn loud() { Nil }
+fn quiet() { Nil }
+pub fn target() { helper.run(Mixed(loud, keep: quiet)) }"
+  let construction = "Mixed(loud, keep: quiet)"
+  let assert [arg] = call_arguments(src)
+  arg.value
+  |> should.equal(types.Constructed(
+    fields: dict.from_list([#("keep", types.LocalRef("quiet"))]),
+    components: [
+      types.Component(
+        span_within(src, construction, "loud"),
+        types.LocalRef("loud"),
+      ),
+      types.Component(
+        span_within(src, construction, "quiet"),
+        types.LocalRef("quiet"),
+      ),
+    ],
+    coverage: types.WholeValue,
+  ))
+}
+
+pub fn an_all_positional_construction_keeps_every_argument_test() {
+  let src =
+    "import helper
+pub type Pair { Pair(left: Int, right: fn() -> Nil) }
+fn loud() { Nil }
+pub fn target() { helper.run(Pair(1, loud)) }"
+  let assert [arg] = call_arguments(src)
+  let assert types.Constructed(fields:, components:, coverage:) = arg.value
+  dict.to_list(fields)
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> should.equal([
+    #("left", OtherExpression),
+    #("right", types.LocalRef("loud")),
+  ])
+  components
+  |> list.map(fn(component) { component.value })
+  |> should.equal([OtherExpression, types.LocalRef("loud")])
+  coverage |> should.equal(types.WholeValue)
+}
+
+pub fn a_nested_construction_is_a_component_test() {
+  let src =
+    "import helper
+pub type Inner { Inner(fn() -> Nil) }
+pub type Outer { Outer(Inner) }
+fn loud() { Nil }
+pub fn target() { helper.run(Outer(Inner(loud))) }"
+  let assert [arg] = call_arguments(src)
+  let assert types.Constructed(components: [outer_component], ..) = arg.value
+  outer_component.span |> should.equal(span_of(src, "Inner(loud)"))
+  let assert types.Constructed(components: [inner_component], ..) =
+    outer_component.value
+  inner_component.value |> should.equal(types.LocalRef("loud"))
+}
+
+pub fn a_factory_with_a_fixed_field_is_a_partial_view_test() {
+  let src =
+    "import helper
+pub type Config { Config(on_item: fn() -> Nil, name: String) }
+fn make(f) { Config(on_item: f, name: \"fixed\") }
+fn loud() { Nil }
+pub fn target() { helper.run(make(loud)) }"
+  let assert [arg] = call_arguments(src)
+  let assert types.Constructed(fields:, components:, coverage:) = arg.value
+  dict.to_list(fields) |> should.equal([#("on_item", types.LocalRef("loud"))])
+  components
+  |> should.equal([
+    types.Component(
+      span_within(src, "make(loud)", "loud"),
+      types.LocalRef("loud"),
+    ),
+  ])
+  coverage |> should.equal(types.PartialValue)
+}
+
+pub fn a_factory_wiring_every_field_is_the_whole_value_test() {
+  let src =
+    "import helper
+pub type Config { Config(on_item: fn() -> Nil, name: String) }
+fn make(f, n) { Config(on_item: f, name: n) }
+fn loud() { Nil }
+pub fn target() { helper.run(make(loud, \"x\")) }"
+  let assert [arg] = call_arguments(src)
+  let assert types.Constructed(coverage:, components:, ..) = arg.value
+  coverage |> should.equal(types.WholeValue)
+  list.length(components) |> should.equal(2)
+}
+
+pub fn a_record_update_keeps_its_base_and_replacements_test() {
+  let src =
+    "import helper
+pub type Config { Config(on_item: fn() -> Nil, name: String) }
+fn loud() { Nil }
+pub fn target(base: Config) { helper.run(Config(..base, on_item: loud)) }"
+  let assert [arg] = call_arguments(src)
+  let assert types.Updated(base:, fields:, components:) = arg.value
+  base |> should.equal(types.LocalRef("base"))
+  dict.to_list(fields) |> should.equal([#("on_item", types.LocalRef("loud"))])
+  components
+  |> should.equal([
+    types.Component(span_within(src, "..base", "base"), types.LocalRef("base")),
+    types.Component(
+      span_within(src, "on_item: loud", "loud"),
+      types.LocalRef("loud"),
+    ),
+  ])
+}
+
+pub fn list_and_tuple_literals_keep_their_elements_test() {
+  let src =
+    "import helper
+fn loud() { Nil }
+pub fn target(rest) { helper.run([loud, ..rest], #(1, loud)) }"
+  let assert [list_arg, tuple_arg] = call_arguments(src)
+  list_arg.value
+  |> should.equal(
+    types.Composite([
+      types.Component(
+        span_within(src, "[loud, ..rest]", "loud"),
+        types.LocalRef("loud"),
+      ),
+      types.Component(
+        span_within(src, "..rest]", "rest"),
+        types.LocalRef("rest"),
+      ),
+    ]),
+  )
+  let assert types.Composite([first, second]) = tuple_arg.value
+  first.value |> should.equal(OtherExpression)
+  second.value |> should.equal(types.LocalRef("loud"))
+}
+
+pub fn a_let_bound_literal_keeps_its_elements_test() {
+  let src =
+    "import helper
+fn loud() { Nil }
+pub fn target() {
+  let fs = [loud]
+  helper.run(fs)
+}"
+  let assert [arg] = call_arguments(src)
+  arg.value
+  |> should.equal(
+    types.Composite([
+      types.Component(
+        span_within(src, "[loud]", "loud"),
+        types.LocalRef("loud"),
+      ),
+    ]),
+  )
+}
