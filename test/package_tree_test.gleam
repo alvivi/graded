@@ -639,10 +639,10 @@ pub fn installed_requirements_supply_edges_without_a_manifest_test() {
   support.cleanup(root <> "/..")
 }
 
-// Packages built without Gleam
+// Packages Gleam builds with rebar3 or mix
 //
-// A rebar3 or mix package may hold no Gleam module and still be the package
-// the manifest lists.
+// A hex package whose build tools name no `"gleam"` and name rebar, rebar3 or
+// mix may hold no Gleam module and still be the package the manifest lists.
 
 // A project depending on one hex package, `native`, installed with `files` in
 // its `src/` and the manifest's `build_tools` replaced by `tools` — `""` drops
@@ -684,6 +684,39 @@ pub fn a_rebar3_package_without_gleam_modules_is_located_test() {
     "native.erl",
   ])
   |> should.be_true
+}
+
+pub fn a_rebar_package_without_gleam_modules_is_located_test() {
+  native_tree_is_complete("rebar", "build_tools = [\"rebar\"], ", [
+    "native.erl",
+  ])
+  |> should.be_true
+}
+
+pub fn a_package_beside_another_tool_without_gleam_modules_is_located_test() {
+  native_tree_is_complete(
+    "mix_rebar3_make",
+    "build_tools = [\"mix\", \"rebar3\", \"make\"], ",
+    ["native.erl"],
+  )
+  |> should.be_true
+}
+
+pub fn a_package_naming_gleam_among_its_tools_needs_a_gleam_module_test() {
+  native_tree_is_complete("mix_gleam", "build_tools = [\"mix\", \"gleam\"], ", [
+    "native.erl",
+  ])
+  |> should.be_false
+}
+
+pub fn a_local_rebar3_package_needs_a_gleam_module_test() {
+  use root <- incomplete_after("root_path_local_version")
+  let assert Ok(Nil) = simplifile.delete(root <> "/../b/src/b.gleam")
+  support.edit_file(
+    root <> "/manifest.toml",
+    "{ name = \"b\", version = \"1.0.0\", build_tools = [\"gleam\"]",
+    "{ name = \"b\", version = \"1.0.0\", build_tools = [\"rebar3\"]",
+  )
 }
 
 pub fn a_mix_package_with_mixed_files_is_located_test() {
