@@ -133,8 +133,11 @@ pub fn reset_directory_mode(path: String) -> Nil {
 // `test/trees/<shape>` at `directory`: the root project at `app/` with its
 // `gleam.toml` and manifest, each local package beside it, and each installed
 // package under `app/build/packages` with the install record. Every package
-// gets one module, `src/<name>.gleam`, and the root a spec holding one
-// `assume` line naming no module. Returns the root project's directory.
+// captured by its `gleam.toml` (`local-<name>.toml`, `installed-<name>.toml`)
+// gets one module, `src/<name>.gleam`. A package Gleam builds with rebar3 or
+// mix (`native-<name>.files`) gets each file its listing names, empty. The
+// root gets a spec holding one `assume` line naming no module. Returns the
+// root project's directory.
 pub fn captured_tree(shape: String, directory: String) -> String {
   let captured = "test/trees/" <> shape
   let _ = simplifile.delete(directory)
@@ -157,6 +160,10 @@ pub fn captured_tree(shape: String, directory: String) -> String {
             let name = string.drop_end(rest, 5)
             write_package(directory <> "/" <> name, name, contents)
           }
+          Ok(#("native", rest)) -> {
+            let name = string.drop_end(rest, 6)
+            write_listed_files(root <> "/build/packages/" <> name, contents)
+          }
           _ -> panic as { "unexpected captured file " <> file }
         }
     }
@@ -174,6 +181,28 @@ pub fn write_package(directory: String, name: String, config: String) -> Nil {
     directory <> "/src/" <> name <> ".gleam",
     "pub fn f() -> Int {\n  1\n}\n",
   )
+}
+
+// Create each file `listing` names under `directory`, empty. The listing holds
+// one path per line, relative to `directory`, and blank lines are ignored.
+// Panics on an absolute path, a `..` segment, or a listing naming no file.
+fn write_listed_files(directory: String, listing: String) -> Nil {
+  let files =
+    string.split(listing, "\n")
+    |> list.filter(fn(line) { string.trim(line) != "" })
+  case files {
+    [] -> panic as { "no file listed for " <> directory }
+    [_, ..] ->
+      list.each(files, fn(file) {
+        case
+          string.starts_with(file, "/")
+          || list.contains(string.split(file, "/"), "..")
+        {
+          True -> panic as { "unsafe listed file " <> file }
+          False -> write_file(directory <> "/" <> file, "")
+        }
+      })
+  }
 }
 
 // Replace the one occurrence of `old` in the file at `path` with `new`.

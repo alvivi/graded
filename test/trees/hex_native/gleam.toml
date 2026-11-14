@@ -1,0 +1,9 @@
+name = "app"
+version = "1.0.0"
+
+[dependencies]
+gleam_stdlib = ">= 0.44.0 and < 2.0.0"
+jason = ">= 1.4.0 and < 2.0.0"
+telemetry = ">= 1.0.0 and < 2.0.0"
+ssl_verify_fun = ">= 1.1.0 and < 2.0.0"
+base64url = ">= 0.0.1 and < 1.0.0"

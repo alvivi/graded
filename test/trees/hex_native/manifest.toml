@@ -1,0 +1,22 @@
+# Do not manually edit this file, it is managed by Gleam.
+#
+# This file locks the dependency versions used, to make your build
+# deterministic and to prevent unexpected versions from being included
+# in your application.
+#
+# You should check this file into your source control repository.
+
+packages = [
+  { name = "base64url", version = "0.0.1", build_tools = ["rebar"], requirements = [], otp_app = "base64url", source = "hex", outer_checksum = "FAB09B20E3F5DB886725544CBCF875B8E73EC93363954EB8A1A9ED834AA8C1F9" },
+  { name = "gleam_stdlib", version = "1.0.5", build_tools = ["gleam"], requirements = [], otp_app = "gleam_stdlib", source = "hex", outer_checksum = "CEE5B6C076A85B45F60C585F4316C63EC8B7127C119D5738C3958A9C4D50404E" },
+  { name = "jason", version = "1.4.5", build_tools = ["mix"], requirements = ["decimal"], otp_app = "jason", source = "hex", outer_checksum = "B0C823996102BCD0239B3C2444EB00409B72F6A140C1950BC8B457D836B30684" },
+  { name = "ssl_verify_fun", version = "1.1.9", build_tools = ["mix", "rebar3", "make"], requirements = [], otp_app = "ssl_verify_fun", source = "hex", outer_checksum = "19F24AD715EF6255D530B2F0DB8B2D2191AE435B6527234E943F523E84ED0895" },
+  { name = "telemetry", version = "1.4.2", build_tools = ["rebar3"], requirements = [], otp_app = "telemetry", source = "hex", outer_checksum = "928F6495066506077862C0D1646609EED891A4326BEE3126BA54B60AF61FEBB1" },
+]
+
+[requirements]
+base64url = { version = ">= 0.0.1 and < 1.0.0" }
+gleam_stdlib = { version = ">= 0.44.0 and < 2.0.0" }
+jason = { version = ">= 1.4.0 and < 2.0.0" }
+ssl_verify_fun = { version = ">= 1.1.0 and < 2.0.0" }
+telemetry = { version = ">= 1.0.0 and < 2.0.0" }

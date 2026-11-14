@@ -8,6 +8,7 @@ import gleam/list
 import gleam/string
 import gleeunit/should
 import graded
+import graded/internal/config
 import graded/internal/types
 import simplifile
 import support
@@ -354,6 +355,61 @@ pub fn a_search_only_packages_directory_leaves_the_lint_silent_test() {
     lint_warnings(root) |> should.equal([])
   }
   support.cleanup(root)
+}
+
+// Packages Gleam builds with rebar3 or mix, as Gleam installs them
+//
+// The `hex_native` tree was captured with Gleam 1.19.0 by `gleam deps
+// download`: `jason` builds with mix, ships no `src/`, and requires `decimal`,
+// which is not installed; `telemetry` builds with rebar3, `base64url` with
+// rebar, and `ssl_verify_fun` with mix, rebar3 and make. `gleam_stdlib` is
+// installed with one module, `gleam_stdlib`, defining `f`.
+
+const native_packages = ["jason", "telemetry", "base64url", "ssl_verify_fun"]
+
+const native_spec =
+  "assume nosuch_module : []
+assume nosuch_module.f : []
+assume gleam_stdlib.f : []
+"
+
+fn native_tree(directory: String) -> String {
+  let root = support.captured_tree("hex_native", directory)
+  support.write_file(root <> "/app.graded", native_spec)
+  root
+}
+
+pub fn a_tree_with_native_packages_is_linted_test() {
+  let root = native_tree("build/dt_lint_hex_native")
+  list.each(native_packages, fn(name) {
+    let assert Ok(files) =
+      config.source_files(root <> "/build/packages/" <> name)
+    list.any(files, string.ends_with(_, ".gleam")) |> should.be_false
+  })
+  lint_warnings(root)
+  |> should.equal([
+    types.UnmatchedModuleAssumeWarning(module: "nosuch_module"),
+    types.UnmatchedFunctionAssumeWarning(function: "nosuch_module.f"),
+  ])
+  support.cleanup(root <> "/..")
+}
+
+pub fn a_native_package_missing_leaves_the_lint_silent_test() {
+  let root = native_tree("build/dt_lint_hex_native_missing")
+  let jason = root <> "/build/packages/jason"
+  let assert Ok(Nil) = simplifile.delete(jason)
+  simplifile.link_info(jason) |> should.equal(Error(simplifile.Enoent))
+  lint_warnings(root) |> should.equal([])
+  support.cleanup(root <> "/..")
+}
+
+pub fn a_native_src_link_leading_nowhere_leaves_the_lint_silent_test() {
+  let root = native_tree("build/dt_lint_hex_native_dangling")
+  let sources = root <> "/build/packages/telemetry/src"
+  let assert Ok(Nil) = simplifile.delete(sources)
+  let assert Ok(Nil) = simplifile.create_symlink(to: "nowhere", from: sources)
+  lint_warnings(root) |> should.equal([])
+  support.cleanup(root <> "/..")
 }
 
 // Local packages loaded in dependency order

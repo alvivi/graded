@@ -309,10 +309,15 @@ pub fn an_installed_git_provider_with_a_version_requirer_test() {
 
 fn incomplete_after(shape: String, edit: fn(String) -> Nil) -> Nil {
   let root = support.captured_tree(shape, "build/pt_edited_" <> shape)
-  package_tree.discover(root) |> package_tree.is_complete |> should.be_true
-  edit(root)
-  package_tree.discover(root) |> package_tree.is_complete |> should.be_false
+  becomes_incomplete(root, fn() { edit(root) })
   support.cleanup(root <> "/..")
+}
+
+// The tree at `root` is complete, and `edit` leaves it incomplete.
+fn becomes_incomplete(root: String, edit: fn() -> Nil) -> Nil {
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_true
+  edit()
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_false
 }
 
 pub fn a_nested_member_at_another_recorded_path_is_incomplete_test() {
@@ -840,4 +845,134 @@ pub fn other_build_tools_still_need_a_gleam_module_test() {
     ["src/native.erl"],
   )
   |> should.be_false
+}
+
+// Requirements Gleam left out
+//
+// Gleam writes every requirement a hex release names into its manifest entry,
+// and installs no package that only optional requirements name. A package
+// Gleam builds with rebar3 or mix may require one the manifest does not list.
+
+// Make the manifest entry of a `native_package_tree`'s `native` require
+// `decimal`, which the manifest does not list.
+fn require_decimal(root: String) -> Nil {
+  support.edit_file(
+    root <> "/manifest.toml",
+    "requirements = []",
+    "requirements = [\"decimal\"]",
+  )
+}
+
+pub fn a_native_package_may_require_an_unlisted_package_test() {
+  let root =
+    native_package_tree("unlisted", "build_tools = [\"mix\"], ", [
+      "lib/native.ex",
+      "mix.exs",
+    ])
+  require_decimal(root)
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_true
+  support.cleanup(root)
+}
+
+pub fn a_gleam_package_requiring_an_unlisted_package_is_incomplete_test() {
+  let root =
+    native_package_tree("gleam_unlisted", "build_tools = [\"gleam\"], ", [
+      "src/native.gleam",
+    ])
+  becomes_incomplete(root, fn() { require_decimal(root) })
+  support.cleanup(root)
+}
+
+pub fn an_unlisted_requirement_still_recorded_is_incomplete_test() {
+  let root =
+    native_package_tree("unlisted_recorded", "build_tools = [\"mix\"], ", [
+      "lib/native.ex",
+      "mix.exs",
+    ])
+  require_decimal(root)
+  becomes_incomplete(root, fn() {
+    support.edit_file(
+      root <> "/build/packages/packages.toml",
+      "native = \"1.0.0\"\n",
+      "native = \"1.0.0\"\ndecimal = \"2.3.0\"\n",
+    )
+  })
+  support.cleanup(root)
+}
+
+pub fn a_record_naming_an_unlisted_local_only_package_is_incomplete_test() {
+  use root <- incomplete_after("root_path_local_version")
+  support.edit_file(
+    root <> "/build/packages/packages.toml",
+    "b = \"1.0.0\"\n",
+    "b = \"1.0.0\"\nstray = \"1.0.0\"\n",
+  )
+}
+
+pub fn a_record_without_a_packages_table_is_incomplete_test() {
+  use root <- incomplete_after("root_path_local_version")
+  support.write_file(root <> "/build/packages/packages.toml", "[git]\n")
+}
+
+pub fn a_record_whose_packages_is_not_a_table_is_incomplete_test() {
+  use root <- incomplete_after("root_path_local_version")
+  support.write_file(
+    root <> "/build/packages/packages.toml",
+    "packages = \"a\"\n\n[git]\n",
+  )
+}
+
+pub fn a_hex_record_without_a_packages_table_is_incomplete_test() {
+  use root <- incomplete_after("hex_native")
+  support.write_file(root <> "/build/packages/packages.toml", "[git]\n")
+}
+
+pub fn a_hex_record_whose_packages_is_not_a_table_is_incomplete_test() {
+  use root <- incomplete_after("hex_native")
+  support.write_file(
+    root <> "/build/packages/packages.toml",
+    "packages = \"jason\"\n\n[git]\n",
+  )
+}
+
+pub fn a_local_only_tree_without_a_record_is_complete_test() {
+  let #(root, local) = captured("root_path_local_version")
+  package_tree.is_complete(local) |> should.be_true
+  let assert Ok(Nil) =
+    simplifile.delete(root <> "/build/packages/packages.toml")
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_true
+  support.cleanup(root <> "/..")
+}
+
+pub fn a_listed_requirement_of_a_native_package_forms_a_cycle_test() {
+  let root = "build/pt_native_cycle"
+  support.write_fixture(
+    root,
+    list.append(
+      support.hex_tree("app", [#("native", "1.0.0"), #("other", "1.0.0")]),
+      [
+        #("src/app.gleam", "pub fn f() -> Int {\n  1\n}\n"),
+        #("build/packages/native/mix.exs", ""),
+        #(
+          "build/packages/other/src/other.gleam",
+          "pub fn f() -> Int {\n  1\n}\n",
+        ),
+      ],
+    ),
+  )
+  support.edit_file(
+    root <> "/manifest.toml",
+    "{ name = \"native\", version = \"1.0.0\", build_tools = [\"gleam\"], requirements = []",
+    "{ name = \"native\", version = \"1.0.0\", build_tools = [\"mix\"], requirements = [\"decimal\", \"other\"]",
+  )
+  dict.get(package_tree.discover(root).edges, "native")
+  |> should.equal(Ok(set.from_list(["other"])))
+  becomes_incomplete(root, fn() {
+    support.edit_file(
+      root <> "/manifest.toml",
+      "{ name = \"other\", version = \"1.0.0\", build_tools = [\"gleam\"], requirements = []",
+      "{ name = \"other\", version = \"1.0.0\", build_tools = [\"gleam\"], requirements = [\"native\"]",
+    )
+  })
+  support.cleanup(root)
 }
