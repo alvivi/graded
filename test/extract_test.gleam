@@ -472,7 +472,7 @@ pub fn target() { io.println |> helper.apply(_, 1) }",
   )
   |> should.equal([
     #(0, None, FunctionRef(QualifiedName("gleam/io", "println"))),
-    #(1, None, OtherExpression),
+    #(1, None, types.Composite([])),
   ])
 }
 
@@ -483,7 +483,7 @@ import helper
 pub fn target() { io.println |> helper.apply(1, _) }",
   )
   |> should.equal([
-    #(0, None, OtherExpression),
+    #(0, None, types.Composite([])),
     #(1, None, FunctionRef(QualifiedName("gleam/io", "println"))),
   ])
 }
@@ -497,7 +497,7 @@ import helper
 pub fn target() { io.println |> helper.apply(times: 1, callback: _) }",
   )
   |> should.equal([
-    #(0, Some("times"), OtherExpression),
+    #(0, Some("times"), types.Composite([])),
     #(1, Some("callback"), FunctionRef(QualifiedName("gleam/io", "println"))),
   ])
 }
@@ -2118,12 +2118,12 @@ pub fn target() { helper.run(Pair(1, loud)) }"
   dict.to_list(fields)
   |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
   |> should.equal([
-    #("left", OtherExpression),
+    #("left", types.Composite([])),
     #("right", types.LocalRef("loud")),
   ])
   components
   |> list.map(fn(component) { component.value })
-  |> should.equal([OtherExpression, types.LocalRef("loud")])
+  |> should.equal([types.Composite([]), types.LocalRef("loud")])
   coverage |> should.equal(types.WholeValue)
 }
 
@@ -2215,7 +2215,7 @@ pub fn target(rest) { helper.run([loud, ..rest], #(1, loud)) }"
     ]),
   )
   let assert types.Composite([first, second]) = tuple_arg.value
-  first.value |> should.equal(OtherExpression)
+  first.value |> should.equal(types.Composite([]))
   second.value |> should.equal(types.LocalRef("loud"))
 }
 

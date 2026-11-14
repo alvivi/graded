@@ -1,4 +1,4 @@
-import glance.{type Span, type Statement}
+import glance.{type Expression, type Span, type Statement}
 import gleam/dict.{type Dict}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
@@ -662,6 +662,21 @@ pub type ArgumentValue {
   // record-returning calls is one — and a branch it cannot classify at all
   // makes the whole expression `OtherExpression` instead.
   Choice(options: List(ArgumentValue))
+  // A function capture `f(a, _, c)`: a function of one parameter that calls
+  // `target` with `arguments` and its own parameter at `hole` (under `label`
+  // where the hole is labelled). Each application evaluates the fixed argument
+  // expressions, `evaluated`, again, with `captures` the callable bindings in
+  // scope where the capture is written. Read only under the latent-effect
+  // rules; every other reader takes it as `OtherExpression`.
+  Capture(
+    span: Span,
+    target: ArgumentValue,
+    hole: Int,
+    label: Option(String),
+    arguments: List(CallArgument),
+    evaluated: List(Expression),
+    captures: List(#(String, ArgumentValue)),
+  )
   // A value produced by *calling* a function that returns a function
   // (`let h = pick_handler()`). `callee` names the producer; a `""` module is
   // the same-module sentinel (resolved on-demand via the function map),

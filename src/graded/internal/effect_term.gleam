@@ -349,7 +349,18 @@ fn reduce_app(
   }
 }
 
-fn is_abstraction(term: EffectTerm) -> Bool {
+// A term with every variable left free read as `[Unknown]`, normalized.
+pub fn close(term: EffectTerm) -> EffectTerm {
+  let bindings =
+    term
+    |> free_vars()
+    |> set.fold(dict.new(), fn(acc, variable) {
+      dict.insert(acc, variable, unknown())
+    })
+  normalize(subst(term, bindings))
+}
+
+pub fn is_abstraction(term: EffectTerm) -> Bool {
   case term {
     TAbs(_, _) -> True
     _ -> False
