@@ -644,20 +644,21 @@ pub fn installed_requirements_supply_edges_without_a_manifest_test() {
 // A hex package whose build tools name no `"gleam"` and name rebar, rebar3 or
 // mix may hold no Gleam module and still be the package the manifest lists.
 
-// A project depending on one hex package, `native`, installed with `files` in
-// its `src/` and the manifest's `build_tools` replaced by `tools` — `""` drops
-// the key.
+// A project depending on one hex package, `native`, installed with `files`,
+// each empty and relative to its directory, and the manifest's `build_tools`
+// replaced by `tools` — `""` drops the key.
 fn native_package_tree(
   name: String,
   tools: String,
   files: List(String),
 ) -> String {
   let root = "build/pt_native_" <> name
+  support.reset_directory_mode(root <> "/build/packages/native")
   support.write_fixture(
     root,
     list.append(support.hex_tree("app", [#("native", "1.0.0")]), [
       #("src/app.gleam", "pub fn f() -> Int {\n  1\n}\n"),
-      ..list.map(files, fn(file) { #("build/packages/native/src/" <> file, "") })
+      ..list.map(files, fn(file) { #("build/packages/native/" <> file, "") })
     ]),
   )
   support.edit_file(
@@ -681,14 +682,14 @@ fn native_tree_is_complete(
 
 pub fn a_rebar3_package_without_gleam_modules_is_located_test() {
   native_tree_is_complete("rebar3", "build_tools = [\"rebar3\"], ", [
-    "native.erl",
+    "src/native.erl",
   ])
   |> should.be_true
 }
 
 pub fn a_rebar_package_without_gleam_modules_is_located_test() {
   native_tree_is_complete("rebar", "build_tools = [\"rebar\"], ", [
-    "native.erl",
+    "src/native.erl",
   ])
   |> should.be_true
 }
@@ -697,14 +698,14 @@ pub fn a_package_beside_another_tool_without_gleam_modules_is_located_test() {
   native_tree_is_complete(
     "mix_rebar3_make",
     "build_tools = [\"mix\", \"rebar3\", \"make\"], ",
-    ["native.erl"],
+    ["src/native.erl"],
   )
   |> should.be_true
 }
 
 pub fn a_package_naming_gleam_among_its_tools_needs_a_gleam_module_test() {
   native_tree_is_complete("mix_gleam", "build_tools = [\"mix\", \"gleam\"], ", [
-    "native.erl",
+    "src/native.erl",
   ])
   |> should.be_false
 }
@@ -721,16 +722,90 @@ pub fn a_local_rebar3_package_needs_a_gleam_module_test() {
 
 pub fn a_mix_package_with_mixed_files_is_located_test() {
   native_tree_is_complete("mix", "build_tools = [\"mix\"], ", [
-    "native.ex",
-    "native/helper.gleam",
+    "lib/native.ex",
+    "mix.exs",
+    "src/native/helper.gleam",
   ])
   |> should.be_true
+}
+
+pub fn a_mix_package_with_no_src_is_located_test() {
+  native_tree_is_complete("no_src", "build_tools = [\"mix\"], ", [
+    "lib/native.ex",
+    "mix.exs",
+  ])
+  |> should.be_true
+}
+
+pub fn a_gleam_package_with_no_src_is_not_located_test() {
+  native_tree_is_complete("gleam_no_src", "build_tools = [\"gleam\"], ", [
+    "lib/native.ex",
+    "mix.exs",
+  ])
+  |> should.be_false
+}
+
+pub fn a_src_link_leading_nowhere_is_not_located_test() {
+  let root =
+    native_package_tree("dangling_src", "build_tools = [\"mix\"], ", [
+      "lib/native.ex",
+      "mix.exs",
+    ])
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: "nowhere",
+      from: root <> "/build/packages/native/src",
+    )
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_false
+  support.cleanup(root)
+}
+
+pub fn a_src_link_to_a_readable_directory_is_located_test() {
+  let root =
+    native_package_tree("linked_src", "build_tools = [\"mix\"], ", [
+      "erlang/native.erl",
+      "mix.exs",
+    ])
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: "erlang",
+      from: root <> "/build/packages/native/src",
+    )
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_true
+  support.cleanup(root)
+}
+
+pub fn a_src_that_is_a_file_is_not_located_test() {
+  native_tree_is_complete("file_src", "build_tools = [\"mix\"], ", [
+    "src",
+    "mix.exs",
+  ])
+  |> should.be_false
+}
+
+pub fn a_src_that_cannot_be_looked_up_is_not_located_test() {
+  let root =
+    native_package_tree("unsearchable", "build_tools = [\"mix\"], ", [
+      "src/native.erl",
+      "mix.exs",
+    ])
+  let package = root <> "/build/packages/native"
+  {
+    use <- support.with_directory_mode(package, 0o600, honoured: fn() {
+      case simplifile.link_info(package <> "/src") {
+        Error(simplifile.Enoent) | Ok(_) -> False
+        Error(_) -> True
+      }
+    })
+    package_tree.discover(root) |> package_tree.is_complete |> should.be_false
+  }
+  support.cleanup(root)
 }
 
 pub fn a_package_with_no_directory_is_not_located_test() {
   let root =
     native_package_tree("missing", "build_tools = [\"rebar3\"], ", [
-      "native.erl",
+      "src/native.erl",
     ])
   let assert Ok(Nil) = simplifile.delete(root <> "/build/packages/native")
   package_tree.discover(root) |> package_tree.is_complete |> should.be_false
@@ -740,7 +815,7 @@ pub fn a_package_with_no_directory_is_not_located_test() {
 pub fn a_package_whose_sources_cannot_be_walked_is_not_located_test() {
   let root =
     native_package_tree("unwalkable", "build_tools = [\"rebar3\"], ", [
-      "native.erl",
+      "src/native.erl",
     ])
   let assert Ok(Nil) =
     simplifile.create_symlink(
@@ -752,15 +827,17 @@ pub fn a_package_whose_sources_cannot_be_walked_is_not_located_test() {
 }
 
 pub fn other_build_tools_still_need_a_gleam_module_test() {
-  native_tree_is_complete("no_key", "", ["native.erl"]) |> should.be_false
-  native_tree_is_complete("empty", "build_tools = [], ", ["native.erl"])
+  native_tree_is_complete("no_key", "", ["src/native.erl"]) |> should.be_false
+  native_tree_is_complete("empty", "build_tools = [], ", ["src/native.erl"])
   |> should.be_false
-  native_tree_is_complete("make", "build_tools = [\"make\"], ", ["native.erl"])
+  native_tree_is_complete("make", "build_tools = [\"make\"], ", [
+    "src/native.erl",
+  ])
   |> should.be_false
   native_tree_is_complete(
     "rebar3_gleam",
     "build_tools = [\"rebar3\", \"gleam\"], ",
-    ["native.erl"],
+    ["src/native.erl"],
   )
   |> should.be_false
 }

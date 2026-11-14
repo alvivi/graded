@@ -298,7 +298,7 @@ pub fn a_tree_with_rebar3_and_mix_packages_is_linted_test() {
         #("src/app.gleam", "pub fn f() -> Int {\n  1\n}\n"),
         #("app.graded", "assume nosuch_module : []\n"),
         #("build/packages/erlpkg/src/erlpkg.erl", ""),
-        #("build/packages/expkg/src/expkg.ex", ""),
+        #("build/packages/expkg/lib/expkg.ex", ""),
         #(
           "build/packages/expkg/src/expkg/bridge.gleam",
           "pub fn f() -> Int {\n  1\n}\n",
