@@ -530,29 +530,6 @@ pub fn check_project(
     parsed:,
     ..,
   ) = sources
-  let #(field_checks, function_checks) =
-    list.partition(annotation.extract_checks(spec), fn(ann) {
-      annotation.is_field_path(ann.function)
-    })
-  let checks_by_module = checks_grouped_by_module(function_checks)
-
-  // A field `check` is package-wide: a type's construction sites are wherever
-  // the package builds it, so the pass runs over every parsed module and the
-  // findings are grouped back onto the file that earned each one. The `reported`
-  // narrowing below then drops the ones outside the asked-about subtree, as it
-  // does for every other result.
-  let field_report =
-    field_check_results(
-      field_checks,
-      parsed,
-      directory,
-      ctx,
-      knowledge_base,
-      registry,
-      type_info,
-      cfg.targets,
-    )
-
   // Every module of the package was analysed, so a call out of the asked-about
   // subtree resolved against the real callee and each module kept the path its
   // `check` lines name. Only the results are narrowed back to what was asked.
@@ -564,34 +541,18 @@ pub fn check_project(
       })
   }
 
-  let results =
-    list.map(reported, fn(entry) {
-      let #(gleam_path, module) = entry
-      let module_path = config.module_path_for_source(gleam_path, directory)
-      let module_checks = case dict.get(checks_by_module, module_path) {
-        Ok(list) -> list
-        Error(_) -> []
-      }
-      let result =
-        check_one_file(
-          gleam_path,
-          module_path,
-          module,
-          module_checks,
-          knowledge_base,
-          registry,
-          typeinfo.reading_for_module(type_info, module_path),
-          cfg.targets,
-        )
-      case dict.get(field_report.findings, gleam_path) {
-        Ok(findings) ->
-          CheckResult(
-            ..result,
-            findings: list.append(result.findings, findings),
-          )
-        Error(Nil) -> result
-      }
-    })
+  let #(results, field_report) =
+    check_modules(
+      spec,
+      parsed,
+      reported,
+      directory,
+      ctx.field_index,
+      knowledge_base,
+      registry,
+      type_info,
+      cfg.targets,
+    )
 
   // Spec-level lint: `check`/field `assume` lines whose target doesn't exist in any
   // project module. These silently do nothing (a vacuous check, or a field
@@ -608,6 +569,69 @@ pub fn check_project(
   }
 
   Ok(results)
+}
+
+// The `check` results of `modules`, each with the field findings it earned,
+// and the field pass behind them. A field `check` is package-wide: a type's
+// construction sites are wherever the package builds it, so the pass runs over
+// every module in `parsed` and its findings are grouped back onto the file
+// that earned each one.
+fn check_modules(
+  spec: GradedFile,
+  parsed: List(#(String, glance.Module)),
+  modules: List(#(String, glance.Module)),
+  directory: String,
+  field_index: types.FieldIndex,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  type_info: typeinfo.TypeInfo,
+  package_targets: types.PackageTargets,
+) -> #(List(CheckResult), FieldCheckResults) {
+  let #(field_checks, function_checks) =
+    list.partition(annotation.extract_checks(spec), fn(ann) {
+      annotation.is_field_path(ann.function)
+    })
+  let checks_by_module = checks_grouped_by_module(function_checks)
+  let field_report =
+    field_check_results(
+      field_checks,
+      parsed,
+      directory,
+      field_index,
+      knowledge_base,
+      registry,
+      type_info,
+      package_targets,
+    )
+  let results =
+    list.map(modules, fn(entry) {
+      let #(gleam_path, module) = entry
+      let module_path = config.module_path_for_source(gleam_path, directory)
+      let module_checks = case dict.get(checks_by_module, module_path) {
+        Ok(list) -> list
+        Error(_) -> []
+      }
+      let result =
+        check_one_file(
+          gleam_path,
+          module_path,
+          module,
+          module_checks,
+          knowledge_base,
+          registry,
+          typeinfo.reading_for_module(type_info, module_path),
+          package_targets,
+        )
+      case dict.get(field_report.findings, gleam_path) {
+        Ok(findings) ->
+          CheckResult(
+            ..result,
+            findings: list.append(result.findings, findings),
+          )
+        Error(Nil) -> result
+      }
+    })
+  #(results, field_report)
 }
 
 // Field checks
@@ -634,7 +658,7 @@ fn field_check_results(
   field_checks: List(EffectAnnotation),
   parsed: List(#(String, glance.Module)),
   directory: String,
-  ctx: ProjectContext,
+  field_index: types.FieldIndex,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
@@ -653,7 +677,7 @@ fn field_check_results(
   // weighed at all; a `where returns` clause leaves the budget on the same line
   // supported, so that line still is.
   let weighable = list.filter(field_checks, fn(ann) { ann.params == [] })
-  let #(checks, unmatched) = resolve_field_checks(weighable, ctx.field_index)
+  let #(checks, unmatched) = resolve_field_checks(weighable, field_index)
   use <- bool.lazy_guard(when: checks == [], return: fn() {
     FieldCheckResults(
       findings: dict.new(),
@@ -671,7 +695,7 @@ fn field_check_results(
           module,
           module_path,
           checks,
-          ctx.field_index,
+          field_index,
           knowledge_base,
           registry,
           typeinfo.reading_for_module(type_info, module_path),
@@ -1077,10 +1101,7 @@ fn project_context(
     knowledge_base:,
     catalog:,
     dependencies: dep_sources,
-    field_index: signatures.merge_field_index(
-      dependency_field_index(dep_sources),
-      build_project_field_index(index),
-    ),
+    field_index: package_field_index(dep_sources, index),
     dep_files:,
     local_packages: local,
     placement_files: placement_files(dep_files, local),
@@ -3104,6 +3125,18 @@ fn read_and_parse_gleam(
   |> result.map_error(GleamParseError(gleam_path, _))
 }
 
+// What the package's own modules and its dependencies' say about their custom
+// types' record fields.
+fn package_field_index(
+  dep_sources: DependencySources,
+  index: Dict(String, #(String, glance.Module)),
+) -> types.FieldIndex {
+  signatures.merge_field_index(
+    dependency_field_index(dep_sources),
+    build_project_field_index(index),
+  )
+}
+
 // What every project module says about its custom types' record fields, keyed
 // the same way a dependency's is so the two merge into one package-wide index.
 fn build_project_field_index(
@@ -3635,6 +3668,46 @@ type ModuleInference {
 // `run_infer` and `run_infer_dry_run` decide what would be written from one
 // shared computation.
 fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
+  use state <- result.map(infer_state(directory))
+  InferOutcome(
+    cfg: state.cfg,
+    spec_on_disk: state.spec_on_disk,
+    merged_spec: annotation.merge_inferred(
+      state.spec,
+      state.public_annotations,
+      stale_assumes: state.stale_assumes,
+      stale_returns_clauses: state.stale_returns_clauses,
+    ),
+    cache_files: state.cache_files,
+  )
+}
+
+// Everything one inference run derives, before it is shaped into what `infer`
+// writes: the inputs it read, the indexes and registry it built, the knowledge
+// base every module was inferred against and left behind, and the public
+// annotations and cache files in topological order.
+type InferState {
+  InferState(
+    // The analysed directory module paths derive from.
+    source_directory: String,
+    cfg: config.GradedConfig,
+    spec_on_disk: String,
+    spec: GradedFile,
+    stale_assumes: Set(String),
+    stale_returns_clauses: Set(String),
+    index: Dict(String, #(String, glance.Module)),
+    registry: SignatureRegistry,
+    type_info: typeinfo.TypeInfo,
+    dependencies: DependencySources,
+    knowledge_base: KnowledgeBase,
+    public_annotations: List(EffectAnnotation),
+    cache_files: List(CacheFile),
+  )
+}
+
+// The inference run behind `compute_infer`, reading nothing from the spec's
+// committed `effects` lines.
+fn infer_state(directory: String) -> Result(InferState, GradedError) {
   // A package has one spec file, so a scoped `infer` is a whole-package `infer`:
   // a spec written from a subtree's modules alone would state the package's
   // public surface wrongly rather than partially.
@@ -3750,7 +3823,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     }),
   )
 
-  let #(_kb, public_annotations, cache_files) =
+  let #(knowledge_base, public_annotations, cache_files) =
     list.fold(sorted, #(base_kb, [], []), fn(state, module_path) {
       let #(kb, acc, cache_acc) = state
       case dict.get(index, module_path) {
@@ -3783,15 +3856,19 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       }
     })
 
-  Ok(InferOutcome(
+  Ok(InferState(
+    source_directory: directory,
     cfg:,
     spec_on_disk:,
-    merged_spec: annotation.merge_inferred(
-      spec,
-      public_annotations,
-      stale_assumes:,
-      stale_returns_clauses:,
-    ),
+    spec:,
+    stale_assumes:,
+    stale_returns_clauses:,
+    index:,
+    registry:,
+    type_info:,
+    dependencies: dep_sources,
+    knowledge_base:,
+    public_annotations:,
     cache_files: list.reverse(cache_files),
   ))
 }
@@ -4119,6 +4196,104 @@ fn public_function_names(module: glance.Module) -> set.Set(String) {
       glance.Private -> acc
     }
   })
+}
+
+// Answer census
+//
+// What graded's own answer census reads off one package: every public
+// function's answer as `infer` computes it, the call sites behind each answer
+// that is partly unknown, and every `check` line's verdict against that same
+// knowledge base. Nothing is read from the spec's committed `effects` lines and
+// nothing is written.
+
+// One package's census.
+@internal
+pub type CensusRoot {
+  CensusRoot(
+    // Every public function's inferred line, qualified by its module.
+    answers: List(EffectAnnotation),
+    // For each public function, the contributors `why` lists for it whose
+    // effects hold `Unknown`.
+    unknown_sources: List(#(String, List(types.CallExplanation))),
+    // Every violation and unproved check, rendered as `check` prints it.
+    violations: List(String),
+  )
+}
+
+@internal
+pub fn census_root(directory: String) -> Result(CensusRoot, GradedError) {
+  use state <- result.map(infer_state(directory))
+  let InferState(
+    source_directory:,
+    cfg:,
+    spec:,
+    index:,
+    registry:,
+    type_info:,
+    dependencies:,
+    knowledge_base:,
+    public_annotations:,
+    ..,
+  ) = state
+  let parsed =
+    dict.values(index)
+    |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  let #(results, field_report) =
+    check_modules(
+      spec,
+      parsed,
+      parsed,
+      source_directory,
+      package_field_index(dependencies, index),
+      knowledge_base,
+      registry,
+      type_info,
+      cfg.targets,
+    )
+  let module_violations =
+    list.flat_map(results, fn(result) { module_report(result).violations })
+  let spec_findings =
+    list.map(field_report.spec_findings, checker.format_finding(
+      cfg.spec_file,
+      _,
+    ))
+  CensusRoot(
+    answers: public_annotations,
+    unknown_sources: list.filter_map(public_annotations, fn(ann) {
+      census_unknown_sources(ann, index, state)
+    }),
+    violations: list.append(spec_findings, module_violations),
+  )
+}
+
+// The contributors to one public answer that `why` lists with an `Unknown` in
+// them, under no bounds; `Error(Nil)` where there are none.
+fn census_unknown_sources(
+  ann: EffectAnnotation,
+  index: Dict(String, #(String, glance.Module)),
+  state: InferState,
+) -> Result(#(String, List(types.CallExplanation)), Nil) {
+  use #(module_path, function) <- result.try(annotation.split_function_name(
+    ann.function,
+  ))
+  use #(_gleam_path, module) <- result.try(dict.get(index, module_path))
+  use explained <- result.try(checker.explain(
+    module,
+    module_path,
+    function,
+    [[]],
+    state.knowledge_base,
+    state.registry,
+    typeinfo.reading_for_module(state.type_info, module_path),
+    state.cfg.targets,
+  ))
+  let explanations =
+    list.flat_map(explained.blocks, fn(block) { block.explanations })
+    |> list.filter(fn(explanation) {
+      types.contains_unknown(explanation.actual)
+    })
+  use <- bool.guard(when: explanations == [], return: Error(Nil))
+  Ok(#(ann.function, explanations))
 }
 
 // Write one module's cache file, creating the directory it lives in.
