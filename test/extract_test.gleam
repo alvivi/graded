@@ -564,25 +564,11 @@ pub fn target(items) {
   list.map(items, io.println)
 }"
   let result = parse_and_extract(src)
-  // list.map is a resolved call, io.println is a function reference
+  // list.map is a resolved call
   result.resolved
   |> list.map(fn(r) { r.name })
   |> list.contains(QualifiedName("gleam/list", "map"))
   |> should.be_true()
-  result.references
-  |> list.map(fn(r) { r.name })
-  |> should.equal([QualifiedName("gleam/io", "println")])
-}
-
-pub fn unqualified_function_ref_test() {
-  let src =
-    "import gleam/io.{println}
-import gleam/list
-pub fn target(items) { list.map(items, println) }"
-  let result = parse_and_extract(src)
-  result.references
-  |> list.map(fn(r) { r.name })
-  |> should.equal([QualifiedName("gleam/io", "println")])
 }
 
 pub fn nested_closure_test() {

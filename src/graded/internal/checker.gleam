@@ -20,6 +20,7 @@ import graded/internal/extract.{type ImportContext}
 import graded/internal/latent
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
+import graded/internal/typedefs
 import graded/internal/typeinfo
 import graded/internal/types.{
   type CallExplanation, type CheckComponent, type CheckFinding,
@@ -52,8 +53,8 @@ import graded/internal/types.{
   UnmatchedReturnsClauseWarning, UnprovedCheck, UnprovedForeignFallback,
   UnresolvedFieldValue, UnresolvedReturnTail, UnsupportedCheckComponent,
   UnsupportedFieldCheckWarning, UntraceableArgument, UntraceableProducer,
-  UntraceableReceiver, UntracedFieldValue, UntrackedEffectWarning, Violation,
-  WiredConstructor, WiredFunction, WiredLocal, WiredValue,
+  UntraceableReceiver, UntracedFieldValue, Violation, WiredConstructor,
+  WiredFunction, WiredLocal, WiredValue,
 }
 
 // Entry points
@@ -2883,6 +2884,8 @@ const closure_sentinel = "<closure>"
 
 const local_sentinel = "<local>"
 
+const passed_sentinel = "<passes>"
+
 const external_sentinel = "<external>"
 
 const declared_sentinel = "<declared>"
@@ -2912,6 +2915,10 @@ pub type CallKind {
   // An unqualified call that matched no parameter bound and no function of the
   // enclosing module, so nothing resolved its effects.
   UnresolvedLocalCall(function: String)
+  // What an argument carries, charged because the callee may run it:
+  // `argument` names the value as an explanation reads it, `callee` the code it
+  // is passed to.
+  PassedArgumentCall(argument: String, callee: String)
   // A direct application of a let-bound function that `producer` returned.
   // `producer.module` is `""` for a producer in the calling module.
   ReturnedOperatorCall(producer: QualifiedName)
@@ -2954,6 +2961,8 @@ fn sentinel_name(kind: CallKind) -> QualifiedName {
     ComputedFieldCall(label:) ->
       QualifiedName(field_sentinel, extract.computed_receiver <> "." <> label)
     UnresolvedLocalCall(function:) -> QualifiedName(local_sentinel, function)
+    PassedArgumentCall(argument:, callee:) ->
+      QualifiedName(passed_sentinel, argument <> "\t" <> callee)
     ReturnedOperatorCall(producer:) ->
       QualifiedName(returned_sentinel, types.dotted_name(producer))
     ExternalDeclaration(name:) -> QualifiedName(external_sentinel, name)
@@ -2982,6 +2991,11 @@ pub fn call_kind(call: QualifiedName) -> CallKind {
     module if module == closure_sentinel -> LetBoundValueCall
     module if module == local_sentinel ->
       payload_kind(call.function, UnresolvedLocalCall)
+    module if module == passed_sentinel ->
+      case string.split_once(call.function, "\t") {
+        Ok(#(argument, callee)) -> PassedArgumentCall(argument:, callee:)
+        Error(Nil) -> UnclassifiedCall
+      }
     module -> {
       use <- bool.guard(
         when: string.starts_with(module, "<"),
@@ -2995,17 +3009,6 @@ pub fn call_kind(call: QualifiedName) -> CallKind {
 // Render a warning as the line `graded check` reports.
 pub fn format_warning(file: String, warning: Warning) -> String {
   case warning {
-    UntrackedEffectWarning(function:, reference:, effects: effs, ..) ->
-      file
-      <> ": warning: "
-      <> function
-      <> " passes "
-      <> reference.module
-      <> "."
-      <> reference.function
-      <> " as a value — its effects "
-      <> effects.format_effect_set(effs)
-      <> " won't be tracked"
     UnmatchedFieldBoundWarning(function:, field_path:, receiver_is_param:) -> {
       let cause = case receiver_is_param {
         True -> " matches no field call in its body — check the path"
@@ -3386,6 +3389,8 @@ fn plain_action(kind: CallKind) -> String {
   case kind {
     DirectCall(module:, function:) -> "calls " <> module <> "." <> function
     ParameterCall(parameter:) -> "calls parameter `" <> parameter <> "`"
+    PassedArgumentCall(argument:, callee:) ->
+      "passes " <> argument <> " to `" <> callee <> "`, which may run it,"
     FieldAccessCall(receiver:, label:) ->
       "calls field `" <> label <> "` on `" <> receiver <> "`"
     ComputedFieldCall(label:) ->
@@ -3507,6 +3512,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
     // answered is what makes it a contributor, and a name nothing declares is
     // never one.
     ParameterCall(..)
+    | PassedArgumentCall(..)
     | CallerDeclaration(..)
     | ComputedFieldCall(..)
     | UnresolvedLocalCall(..)
@@ -3713,6 +3719,17 @@ fn callback_binder_sentinel(start: Int, name: String) -> String {
 // True iff a term still carries unresolved (free) effect variables.
 fn has_vars(term: EffectTerm) -> Bool {
   !effect_term.is_ground(term)
+}
+
+// The variables the terms of `calls` name.
+fn calls_free_vars(calls: List(CollectedCall)) -> Set(String) {
+  list.fold(calls, set.new(), fn(named, one) {
+    let term = collected_term(one)
+    case has_vars(term) {
+      True -> set.union(named, effect_term.free_vars(term))
+      False -> named
+    }
+  })
 }
 
 // Union the effect terms of a list of collected calls, normalizing once.
@@ -4163,7 +4180,9 @@ fn memo_key(
   let ancestors =
     visited
     |> set.to_list()
-    |> list.filter(fn(ancestor) { dict.get(cache.scc_id, ancestor) == scc })
+    |> list.filter(fn(ancestor) {
+      dict.get(cache.scc_id, walked_function(ancestor)) == scc
+    })
     |> list.sort(string.compare)
   #(name, ancestors)
 }
@@ -4216,7 +4235,7 @@ fn charge_unseen_local(
   function_map: dict.Dict(String, Definition(Function)),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   unseen_callee_charge: fn(List(types.CallArgument), Memo) ->
-    #(EffectTerm, Memo),
+    #(List(ArgumentCharge), Memo),
 ) -> #(Memo, List(CollectedCall)) {
   let #(calls, memo) = collected
   use <- bool.guard(
@@ -4224,29 +4243,9 @@ fn charge_unseen_local(
       && dict.has_key(function_map, local_call.function),
     return: #(memo, calls),
   )
-  let #(charge, memo) =
+  let #(charges, memo) =
     unseen_callee_charge(call_args_for(call_args, local_call.span), memo)
-  #(memo, with_extra_charge(calls, charge))
-}
-
-// Calls with `charge` added to the first one's term.
-fn with_extra_charge(
-  calls: List(CollectedCall),
-  charge: EffectTerm,
-) -> List(CollectedCall) {
-  case calls, effect_term.normalize(charge) == effect_term.pure() {
-    _, True | [], False -> calls
-    [first, ..rest], False -> [
-      CollectedCall(
-        ..first,
-        resolution: Resolution(
-          ..first.resolution,
-          term: effect_term.normalize(TUnion([first.resolution.term, charge])),
-        ),
-      ),
-      ..rest
-    ]
-  }
+  #(memo, list.append(calls, charge_calls(charges, local_call.function)))
 }
 
 // What the module under analysis defines for `function`, as the value channels
@@ -4462,6 +4461,16 @@ type Memo {
     // The same line as what each argument it is handed is charged, read once
     // per callee on the same view.
     declared_lines: dict.Dict(QualifiedName, DeclaredLine),
+    // For each function whose walk is under way or done, the variables of its
+    // parameters its summary is stated over, in the order a call back into it
+    // applies its recursion marker to them.
+    recursion_vars: dict.Dict(String, List(String)),
+    // For each member of a component analysed as one union, the variables of
+    // its parameters that union names, which a call back into it from inside
+    // the component contributes, bound to that call's arguments.
+    collapsed_vars: dict.Dict(String, List(String)),
+    // `member_view` of each member of a component whose union `sccs` holds.
+    member_views: dict.Dict(String, List(CollectedCall)),
   )
 }
 
@@ -4479,6 +4488,9 @@ fn new_memo() -> Memo {
     shapes: dict.new(),
     contracts: dict.new(),
     declared_lines: dict.new(),
+    recursion_vars: dict.new(),
+    collapsed_vars: dict.new(),
+    member_views: dict.new(),
   )
 }
 
@@ -4543,6 +4555,8 @@ fn memo_on(memo: Memo, targets: Option(Set(String))) -> Memo {
     ..new_memo(),
     targets: targets,
     shapes: memo.shapes,
+    recursion_vars: memo.recursion_vars,
+    collapsed_vars: memo.collapsed_vars,
     baseline: option.map(memo.baseline, fn(view) {
       BaselineView(..view, memo: memo_on(view.memo, targets))
     }),
@@ -4943,31 +4957,6 @@ fn check_annotation(
           }
         })
 
-      // Warn about function references passed as values with known non-pure
-      // effects. A reference sits in the Gleam body, so the warning turns on
-      // whether that body is code that runs: an `@external` covering every
-      // compiled target keeps its body as dead text, and nothing it references
-      // is ever passed anywhere.
-      let extract_result =
-        extract.extract_function_calls(function_definition.definition, context)
-      let reference_warnings = case contribution.body {
-        BodyIsDeadText -> []
-        BodyWalked ->
-          collect_reference_warnings(
-            annotation.function,
-            extract_result.references,
-            // Read on the targets the body passing the reference runs on, like
-            // every other name that body reaches: a reference whose effects
-            // belong to an implementation this build never compiles is not one
-            // the caller is failing to track.
-            body_knowledge_base(
-              knowledge_base,
-              function_definition,
-              context.package_targets,
-            ),
-          )
-      }
-
       let param_names =
         function_definition.definition.parameters
         |> list.filter_map(fn(param) {
@@ -4985,13 +4974,22 @@ fn check_annotation(
       // provenance, shadowing the bound; the warning says so rather than blaming
       // the path. (Provenance only traces let-bound constructions, never a
       // parameter, so the parameter case is never a false provenance report.)
-      let field_call_targets =
-        extract_result.field
-        |> list.map(field_call_target)
-        |> set.from_list()
+      let field_bounds =
+        list.filter(annotation.params, fn(bound) {
+          string.contains(bound.name, ".")
+        })
+      let field_call_targets = case field_bounds {
+        [] -> set.new()
+        [_, ..] ->
+          extract.extract_function_calls(
+            function_definition.definition,
+            context,
+          ).field
+          |> list.map(field_call_target)
+          |> set.from_list()
+      }
       let unmatched_field_bound_warnings =
-        annotation.params
-        |> list.filter(fn(bound) { string.contains(bound.name, ".") })
+        field_bounds
         |> list.filter(fn(bound) {
           !set.contains(field_call_targets, bound.name)
         })
@@ -5024,9 +5022,10 @@ fn check_annotation(
         })
 
       let warnings =
-        reference_warnings
-        |> list.append(unmatched_field_bound_warnings)
-        |> list.append(unmatched_param_bound_warnings)
+        list.append(
+          unmatched_field_bound_warnings,
+          unmatched_param_bound_warnings,
+        )
 
       let #(findings, memo) =
         check_returns_clause(
@@ -6198,47 +6197,6 @@ fn weighed_actual(
   }
 }
 
-// A warning quotes an effect, so it goes through the boundary that decides what
-// an effect *is* — `lookup_declared`, not the raw map. Otherwise a reference to
-// an `@external` a stale `effects` line names would be reported as carrying that
-// line's effects, which is the one thing no caller of the same name is charged.
-//
-// Held to `Unknown` meaning silence, as it already was: an unresolved reference
-// warns about nothing, so a foreign name the rule collapses to `[Unknown]` warns
-// about nothing either, rather than newly warning about an unknown. Silence is
-// decided on the *set*, not on which lookup variant carried it — an undeclared
-// external with a running fallback answers `Known([…, Unknown])`, so reading the
-// variant alone let one warn that its effects `[Unknown]` won't be tracked.
-//
-// A set that mixes the two (`[Disk, Unknown]`) still warns: the known half is a
-// real effect the reference carries past anything that tracks it.
-fn collect_reference_warnings(
-  function_name: String,
-  references: List(types.ResolvedCall),
-  knowledge_base: KnowledgeBase,
-) -> List(Warning) {
-  list.filter_map(references, fn(ref) {
-    case effects.lookup_declared(knowledge_base, ref.name) {
-      effects.Known(term, _) -> {
-        let effect_set = effect_term.to_effect_set(term)
-        case
-          effect_set == types.empty() || types.is_wholly_unknown(effect_set)
-        {
-          True -> Error(Nil)
-          False ->
-            Ok(UntrackedEffectWarning(
-              function: function_name,
-              reference: ref.name,
-              span: ref.span,
-              effects: effect_set,
-            ))
-        }
-      }
-      effects.Unknown -> Error(Nil)
-    }
-  })
-}
-
 // Effect collection
 //
 // The core body walker: turn a function's extracted calls — resolved, local,
@@ -6570,7 +6528,7 @@ fn collect_view_effects(
   // What calling code graded does not see charges for the arguments it is
   // handed: a caller's own parameter, or a name nothing resolves.
   let unseen_callee_charge = fn(args, memo) {
-    deep_charge(
+    deep_charges(
       args,
       latent_resolver(
         context,
@@ -6625,10 +6583,10 @@ fn collect_view_effects(
   // base. If the callee's effects are polymorphic (contain effect
   // variables), bind the variables by matching arguments at fn-typed
   // parameter positions and substitute for concrete effects.
-  let #(memo, resolved_effects) =
+  let #(memo, resolved_nested) =
     list.map_fold(resolved_calls, memo, fn(memo, call) {
       let looked_up = lookup_parts(knowledge_base, call.name, NoKnownEffects)
-      let #(concrete, concrete_fallback, memo) =
+      let #(concrete, concrete_fallback, charges, memo) =
         substitute_at_call_site(
           call,
           looked_up.term,
@@ -6650,8 +6608,12 @@ fn collect_view_effects(
       let resolution =
         substituted(looked_up, concrete)
         |> with_substituted_fallback(concrete_fallback)
-      #(memo, CollectedCall(call:, resolution:))
+      #(memo, [
+        CollectedCall(call:, resolution:),
+        ..charge_calls(charges, types.dotted_name(call.name))
+      ])
     })
+  let resolved_effects = list.flatten(resolved_nested)
 
   // Local calls: check param bounds first (user-declared and auto-detected
   // fn-typed bounds both live here), then fall back to transitive analysis
@@ -6701,21 +6663,20 @@ fn collect_view_effects(
             dict.get(operator_params, local_call.function)
             |> result.map(list.map(_, fn(position) { position.0 }))
             |> result.unwrap([])
-          let #(charge, memo) =
+          let #(charges, memo) =
             call_args_for(result.call_args, local_call.span)
             |> list.filter(fn(arg) { !list.contains(lifted, arg.position) })
             |> unseen_callee_charge(memo)
           #(memo, [
-            plain_call(
-              synthetic_call,
-              effect_term.normalize(TUnion([effect, charge])),
-            ),
+            plain_call(synthetic_call, effect),
+            ..charge_calls(charges, local_call.function)
           ])
         }
         Error(Nil) -> {
           let #(recursive, memo) =
             resolve_unknown_local(
               local_call,
+              call_args_for(result.call_args, local_call.span),
               visited,
               function_map,
               context,
@@ -6776,21 +6737,15 @@ fn collect_view_effects(
           memo,
         )
       // A field's function is code graded does not see run its arguments.
-      let #(charge, memo) =
+      let #(charges, memo) =
         unseen_callee_charge(
           call_args_for(result.call_args, field_call.span),
           memo,
         )
-      #(
-        memo,
-        CollectedCall(
-          call: synthetic_call,
-          resolution: Resolution(
-            ..resolution,
-            term: effect_term.normalize(TUnion([resolution.term, charge])),
-          ),
-        ),
-      )
+      #(memo, [
+        CollectedCall(call: synthetic_call, resolution:),
+        ..charge_calls(charges, synthetic_call.name.function)
+      ])
     })
 
   // Direct applications of a let-bound returned operator: `let h = pick(); h(cb)`.
@@ -6962,7 +6917,7 @@ fn collect_view_effects(
     list.flatten([
       resolved_effects,
       local_effects,
-      field_effects,
+      list.flatten(field_effects),
       undecided_effects,
       direct_op_effects,
       direct_pipe_effects,
@@ -7207,25 +7162,72 @@ fn first_order_arg_effect(
 // already accounted for elsewhere — a recursive self-reference, captured by the
 // outer frame analysing it. Empty `positions` yields a ground `pure`.
 fn pure_operator(positions: List(Int)) -> EffectTerm {
-  list.fold(positions, effect_term.pure(), fn(body, position) {
+  absorbing_operator(positions, effect_term.pure())
+}
+
+// An operator that absorbs `positions`-many callback arguments and reduces to
+// `body`.
+fn absorbing_operator(positions: List(Int), body: EffectTerm) -> EffectTerm {
+  list.fold(positions, body, fn(body, position) {
     types.TAbs("_rec" <> int.to_string(position), body)
   })
 }
 
-// The neutral operator a recursive producer call contributes: pure over the
-// callback positions of the producer's returned function type. `Error(Nil)`
-// when the return type is absent or not a function (no arity to recover), so
-// resolution stays conservative.
-fn neutral_returned_operator(
+// What a call to `function` returns while its returned operator is computed up
+// the stack: its returns marker applied to its callback parameters, which the
+// call site binds to its arguments. A producer with no callback parameter
+// returns what it returns whatever it is passed, which the computation up the
+// stack already gathers: pure over the callback positions of its returned
+// function type. `Error(Nil)` when the return type is absent or not a function.
+fn recursive_returned_operator(
   function: Function,
-  alias_map: dict.Dict(String, glance.Type),
+  cache: LocalCache,
 ) -> Result(EffectTerm, Nil) {
   use return_type <- result.try(option.to_result(function.return, Nil))
   use positions <- result.map(signatures.returned_callback_positions(
     return_type,
-    alias_map,
+    cache.fn_alias_types,
   ))
-  pure_operator(positions)
+  case cached_callback_params(function, cache) {
+    [] -> pure_operator(positions)
+    params ->
+      list.fold(
+        params,
+        TVar(returns_marker(function.name)),
+        fn(operator, param) { types.TApp(operator, TVar(param)) },
+      )
+  }
+}
+
+// `operator`, the returned operator computed for `function` over its callback
+// parameters `params` (as their sentinels), with each call back into the
+// computation resolved: the least fixed point over those calls, iterated from
+// the pure operator over `positions`.
+fn resolved_returns(
+  operator: EffectTerm,
+  function: String,
+  params: List(String),
+  positions: List(Int),
+) -> EffectTerm {
+  let marker = returns_marker(function)
+  use <- bool.guard(
+    when: !set.contains(effect_term.free_vars(operator), marker),
+    return: operator,
+  )
+  let summary =
+    recursion_fixpoint(
+      marker,
+      list.map(params, sentinel_of),
+      operator,
+      pure_operator(positions),
+      absorbing_operator(positions, effect_term.unknown()),
+      growth_bound(operator, marker),
+      0,
+    )
+  effect_term.normalize(effect_term.subst(
+    operator,
+    dict.from_list([#(marker, summary)]),
+  ))
 }
 
 // Recover a first-order closure's body effect from its lifted operator by
@@ -7330,7 +7332,7 @@ fn substitute_local_call_effects(
       use <- bool.lazy_guard(when: declares, return: fn() {
         let #(memo, calls) =
           list.map_fold(recursive, memo, fn(memo, one) {
-            let #(concrete, concrete_fallback, memo) =
+            let #(concrete, concrete_fallback, charges, memo) =
               substitute_at_call_site(
                 one.call,
                 one.resolution.term,
@@ -7352,9 +7354,12 @@ fn substitute_local_call_effects(
             let resolution =
               substituted(one.resolution, concrete)
               |> with_substituted_fallback(concrete_fallback)
-            #(memo, CollectedCall(..one, resolution:))
+            #(memo, [
+              CollectedCall(..one, resolution:),
+              ..charge_calls(charges, types.dotted_name(one.call.name))
+            ])
           })
-        #(calls, memo)
+        #(list.flatten(calls), memo)
       })
       let any_polymorphic =
         list.any(recursive, fn(one) { has_vars(collected_term(one)) })
@@ -7407,9 +7412,18 @@ fn substitute_local_call_effects(
       // produced: an `[Unknown]` they introduced is this call's argument, and a
       // field variable the callee left open is answered by the source of the
       // value this caller wired. A fallback share rides the same bindings as
-      // the term it is a component of.
+      // the term it is a component of. A site whose term and share name no
+      // variable is left as it is: no binding reaches it.
       let substituted =
         list.map(recursive, fn(one) {
+          let share_ground = case one.resolution.fallback {
+            types.FallbackCharged(share) -> !has_vars(share)
+            types.NoFallback -> True
+          }
+          use <- bool.guard(
+            when: !has_vars(collected_term(one)) && share_ground,
+            return: one,
+          )
           let bind = fn(term) {
             apply_call_bindings(
               term,
@@ -7764,32 +7778,36 @@ fn container_contract(
 
 // What a call is charged for what its arguments carry, beyond the callee's own
 // term.
-fn latent_call_charge(
+fn latent_call_charges(
   callee: QualifiedName,
   args: List(types.CallArgument),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   resolver: latent.Resolver(Memo),
   memo: Memo,
-) -> #(EffectTerm, Memo) {
+) -> #(List(ArgumentCharge), Memo) {
   case effects.lookup(knowledge_base, callee) {
     // Nothing answers for the callee: every argument may run.
-    effects.Unknown -> deep_charge(args, resolver, memo)
+    effects.Unknown -> deep_charges(args, resolver, memo)
     effects.Known(_term, source) ->
       case effects.lineage_of(source) {
-        types.GeneratedLine | types.CurrentInference -> #(
-          effect_term.pure(),
-          memo,
-        )
+        types.GeneratedLine | types.CurrentInference -> #([], memo)
         types.DeclaredLine ->
-          declared_line_charge(
-            callee,
-            args,
-            knowledge_base,
-            registry,
-            resolver,
-            memo,
-          )
+          case effects.declared_charge(knowledge_base, callee).declaration {
+            // The declaration is built on none of the walk's targets: its
+            // Gleam body answers instead, as a summary of what it runs.
+            effects.FallbackAnswersInstead -> #([], memo)
+            effects.NothingImplementsName -> deep_charges(args, resolver, memo)
+            effects.DeclarationCharged ->
+              declared_line_charges(
+                callee,
+                args,
+                knowledge_base,
+                registry,
+                resolver,
+                memo,
+              )
+          }
       }
   }
 }
@@ -7800,14 +7818,14 @@ fn latent_call_charge(
 // whose default is no-run. A callback the line has no bound for is charged as
 // something that may call it and what it returns; a parameter of unknown kind
 // is charged deep; a callee with no signature has every argument charged deep.
-fn declared_line_charge(
+fn declared_line_charges(
   callee: QualifiedName,
   args: List(types.CallArgument),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   resolver: latent.Resolver(Memo),
   memo: Memo,
-) -> #(EffectTerm, Memo) {
+) -> #(List(ArgumentCharge), Memo) {
   let #(line, memo) = case dict.get(memo.declared_lines, callee) {
     Ok(line) -> #(line, memo)
     Error(Nil) -> {
@@ -7822,15 +7840,16 @@ fn declared_line_charge(
     }
   }
   case line.parameters {
-    None -> deep_charge(args, resolver, memo)
+    None -> deep_charges(args, resolver, memo)
     Some(parameters) -> {
       let infos = list.map(parameters, fn(parameter) { parameter.info })
-      list.fold(args, #(effect_term.pure(), memo), fn(acc, arg) {
-        let #(charged, memo) = acc
-        let #(charge, memo) =
-          argument_charge(arg, infos, parameters, line, resolver, memo)
-        #(effect_term.normalize(TUnion([charged, charge])), memo)
-      })
+      let #(memo, charges) =
+        list.map_fold(args, memo, fn(memo, arg) {
+          let #(charge, memo) =
+            argument_charge(arg, infos, parameters, line, resolver, memo)
+          #(memo, ArgumentCharge(arg:, term: charge))
+        })
+      #(charged_only(charges), memo)
     }
   }
 }
@@ -7880,6 +7899,62 @@ fn declared_line(
         })
       }),
   )
+}
+
+// What one argument is charged where a callee may run it.
+type ArgumentCharge {
+  ArgumentCharge(arg: types.CallArgument, term: EffectTerm)
+}
+
+// The charges that charge something.
+fn charged_only(charges: List(ArgumentCharge)) -> List(ArgumentCharge) {
+  list.filter(charges, fn(charge) {
+    effect_term.normalize(charge.term) != effect_term.pure()
+  })
+}
+
+// Every charge's term, together.
+fn union_of_charges(charges: List(ArgumentCharge)) -> EffectTerm {
+  effect_term.normalize(TUnion(list.map(charges, fn(charge) { charge.term })))
+}
+
+// Each charge as the call that explains it: the argument passed to `callee`,
+// which may run it.
+fn charge_calls(
+  charges: List(ArgumentCharge),
+  callee: String,
+) -> List(CollectedCall) {
+  list.map(charges, fn(charge) {
+    plain_call(
+      sentinel_call(
+        PassedArgumentCall(
+          argument: describe_argument(charge.arg.value),
+          callee:,
+        ),
+        charge.arg.span,
+      ),
+      charge.term,
+    )
+  })
+}
+
+// How an explanation names an argument value.
+fn describe_argument(value: types.ArgumentValue) -> String {
+  let named = fn(name) { "`" <> name <> "`" }
+  case value {
+    types.FunctionRef(name:) -> named(types.dotted_name(name))
+    types.LocalRef(name:, ..) -> named(name)
+    types.ReceiverPath(path:, ..) -> named(path)
+    types.CallResult(callee:, ..) | types.ReturnedOperator(callee:, ..) ->
+      "what " <> named(types.dotted_name(callee)) <> " returns"
+    types.Closure(..) -> "a closure"
+    types.Capture(..) -> "a function capture"
+    types.Composite(..) -> "a list or tuple"
+    types.Constructed(..) | types.Updated(..) -> "a record"
+    types.Choice(..) -> "a choice of functions"
+    types.ConstructorRef -> "a constructor"
+    types.OtherExpression -> "an argument"
+  }
 }
 
 fn argument_charge(
@@ -7951,12 +8026,23 @@ fn deep_charge(
   resolver: latent.Resolver(Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  list.fold(args, #(effect_term.pure(), memo), fn(acc, arg) {
-    let #(charged, memo) = acc
-    let #(carried, memo) =
-      latent.argument_latent(arg.value, arg.span, dict.new(), resolver, memo)
-    #(effect_term.normalize(TUnion([charged, latent.to_term(carried)])), memo)
-  })
+  let #(charges, memo) = deep_charges(args, resolver, memo)
+  #(union_of_charges(charges), memo)
+}
+
+// What each argument carries, charged where it may run.
+fn deep_charges(
+  args: List(types.CallArgument),
+  resolver: latent.Resolver(Memo),
+  memo: Memo,
+) -> #(List(ArgumentCharge), Memo) {
+  let #(memo, charges) =
+    list.map_fold(args, memo, fn(memo, arg) {
+      let #(carried, memo) =
+        latent.argument_latent(arg.value, arg.span, dict.new(), resolver, memo)
+      #(memo, ArgumentCharge(arg:, term: latent.to_term(carried)))
+    })
+  #(charged_only(charges), memo)
 }
 
 // The parameter an argument fills: the one `argument_for_parameter` pairs it
@@ -7995,7 +8081,12 @@ fn substitute_at_call_site(
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
-) -> #(EffectTerm, types.FallbackDisposition(EffectTerm), Memo) {
+) -> #(
+  EffectTerm,
+  types.FallbackDisposition(EffectTerm),
+  List(ArgumentCharge),
+  Memo,
+) {
   let substitute = fn(effect, fallback, memo) {
     substitute_bindings(
       call,
@@ -8053,8 +8144,8 @@ fn substitute_at_call_site(
   let bind = fn(term) { subst_if(term, bindings) }
   let #(term, fallback, memo) =
     substitute(bind(effect), types.map_fallback(fallback, bind), memo)
-  let #(charge, memo) =
-    latent_call_charge(
+  let #(charges, memo) =
+    latent_call_charges(
       call.name,
       args,
       knowledge_base,
@@ -8062,7 +8153,7 @@ fn substitute_at_call_site(
       resolver,
       memo,
     )
-  #(effect_term.normalize(TUnion([term, charge])), fallback, memo)
+  #(term, fallback, charges, memo)
 }
 
 // Bindings keyed by a line's variables, keyed instead by the parameters each
@@ -9262,15 +9353,19 @@ fn build_lift_operator_arg(
               )
             #(Ok(operator), memo)
           }
-          // A recursive reference — the function is already being analysed up
-          // the call stack, so its own effects are captured by that outer
-          // frame. This reference contributes nothing: a pure operator over the
-          // callback positions, rather than collapsing to [Unknown]. Mirrors
-          // the cycle handling in `resolve_unknown_local`.
-          True, Ok(_) -> #(Ok(pure_operator(positions)), memo)
+          // A reference to a function already being walked up the stack: what
+          // it does with the callbacks it is handed is the summary that walk is
+          // computing, as at a call back into it.
+          True, Ok(definition) -> #(
+            Ok(recursive_reference(name, definition, positions, cache, memo)),
+            memo,
+          )
           _, Error(Nil) -> #(Error(Nil), memo)
         }
+      // A producer parameter passed on reads as its sentinel, as the
+      // producer's own body reads it.
       types.ReturnedOperator(callee, args) | types.CallResult(callee, args) -> {
+        let producer_params = set.to_list(sentinel_params)
         let #(resolved, memo) =
           resolve_returned_operator(
             callee,
@@ -9281,8 +9376,11 @@ fn build_lift_operator_arg(
             visited,
             registry,
             reading,
-            [],
-            empty_lexicon(),
+            list.map(producer_params, sentinel_bound),
+            Lexicon(
+              binders: dict.take(binders, producer_params),
+              own: set.new(),
+            ),
             cache,
             memo,
           )
@@ -9358,7 +9456,7 @@ fn capture_operator(
     types.Capture(span:, target: types.FunctionRef(name:), ..) -> {
       let call = types.ResolvedCall(name:, span:)
       let looked_up = lookup_parts(knowledge_base, name, NoKnownEffects)
-      let #(concrete, concrete_fallback, memo) =
+      let #(concrete, concrete_fallback, charges, memo) =
         substitute_at_call_site(
           call,
           looked_up.term,
@@ -9378,7 +9476,10 @@ fn capture_operator(
           memo,
         )
       let resolution =
-        substituted(looked_up, concrete)
+        substituted(
+          looked_up,
+          effect_term.normalize(TUnion([concrete, union_of_charges(charges)])),
+        )
         |> with_substituted_fallback(concrete_fallback)
       #(Ok([CollectedCall(call:, resolution:)]), memo)
     }
@@ -9404,6 +9505,7 @@ fn capture_operator(
           let #(recursive, memo) =
             resolve_unknown_local(
               local_call,
+              call_args_for(capture_call_args(span, value), span),
               visited,
               function_map,
               context,
@@ -9554,7 +9656,7 @@ fn resolve_returned_operator(
   let #(lookup, memo) = case callee.module {
     "" ->
       case
-        set.contains(visited, callee.function),
+        set.contains(visited, returns_key(callee.function)),
         local_definition(
           function_map,
           callee.function,
@@ -9568,7 +9670,7 @@ fn resolve_returned_operator(
               context,
               function_map,
               knowledge_base,
-              set.insert(visited, callee.function),
+              set.insert(visited, returns_key(callee.function)),
               registry,
               reading,
               cache,
@@ -9581,14 +9683,11 @@ fn resolve_returned_operator(
             memo,
           )
         }
-        // A recursive producer call — the producer is already on the analysis
-        // stack, so this branch contributes the neutral operator (pure over the
-        // returned function's callback positions), not [Unknown]. Mirrors the
-        // recursive function-reference handling in `build_lift_operator_arg`.
-        // Arity comes from the producer's return type; if it isn't a function
-        // type, stay conservative.
+        // A producer whose returned operator is already being computed up the
+        // stack: what it returns for this call's arguments is the summary that
+        // computation is reaching.
         True, NativeDefinition(definition) -> #(
-          neutral_returned_operator(definition.definition, cache.fn_alias_types)
+          recursive_returned_operator(definition.definition, cache)
             |> result.map(fn(op) { #(op, effects.Fresh, None) }),
           memo,
         )
@@ -9770,7 +9869,9 @@ fn bind_producer_params(
   let synth =
     effect_term.free_vars(operator)
     |> set.filter(fn(v) {
-      !is_field_path_var(v) && !set.contains(introduced, v)
+      !is_field_path_var(v)
+      && !is_recursion_marker(v)
+      && !set.contains(introduced, v)
     })
     |> set.to_list()
     |> list.map(self_referential_bound)
@@ -9956,7 +10057,9 @@ fn compute_view_returned_operator(
       // Fix D steps 3+4: ground every non-sentinel free var (bare residual or any
       // dotted var) to [Unknown], then rename sentinels back to real param names —
       // so the summary's free vars ⊆ the producer's fn-typed params by construction.
-      let operator = collapse_and_rename_back(operator, producer_params)
+      let operator =
+        resolved_returns(operator, function.name, ordered_params, positions)
+        |> collapse_and_rename_back(producer_params, visited)
       #(compute_returned_operator_result(operator), memo)
     }
   }
@@ -9971,13 +10074,16 @@ fn compute_view_returned_operator(
 fn collapse_and_rename_back(
   operator: EffectTerm,
   producer_params: Set(String),
+  visited: Set(String),
 ) -> EffectTerm {
   let sentinels =
     producer_params |> set.to_list() |> list.map(sentinel_of) |> set.from_list()
   let collapsed =
     ground_vars(
       operator,
-      set.difference(effect_term.free_vars(operator), sentinels),
+      effect_term.free_vars(operator)
+        |> set.difference(sentinels)
+        |> set.filter(fn(variable) { !owned_up_the_stack(variable, visited) }),
     )
   let rename =
     producer_params
@@ -10303,7 +10409,8 @@ fn lift_local_function(
     // an application of the lifted operator reduces rather than going stuck.
     True -> {
       let #(pairs, memo) =
-        collapsed_scc(
+        collapsed_member_view(
+          name,
           scc,
           function_map,
           context,
@@ -10368,7 +10475,14 @@ fn lift_operator_miss(
   // stays free and the application goes stuck.
   let bounds =
     list.map(cached_callback_params(function, cache), self_referential_bound)
-  let #(body_pairs, memo) =
+  let #(body_pairs, memo) = {
+    use memo <- walk_recursive(
+      name,
+      definition,
+      fn() { path_bound([name], function_map, context, registry) },
+      cache,
+      memo,
+    )
     collect_effects(
       without_returned_closure(function),
       function_map,
@@ -10382,6 +10496,7 @@ fn lift_operator_miss(
       cache,
       memo,
     )
+  }
   let body = union_of(body_pairs)
   #(body, Memo(..memo, lifts: dict.insert(memo.lifts, key, body)))
 }
@@ -10600,6 +10715,7 @@ fn resolve_argument_effects(
 
 fn resolve_unknown_local(
   local_call: LocalCall,
+  args: List(types.CallArgument),
   visited: Set(String),
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
@@ -10621,11 +10737,19 @@ fn resolve_unknown_local(
     ],
     memo,
   ))
-  // Cycle detected — already analysing this function up the call stack. Return
-  // empty rather than looping; the effects will be captured by the outer frame
-  // that started the analysis.
+  // A function already being walked up the call stack: what it does with this
+  // call's arguments is the summary that walk is computing.
   use <- bool.guard(when: set.contains(visited, local_call.function), return: #(
-    [],
+    back_edge(
+      local_call,
+      args,
+      function_map,
+      context,
+      registry,
+      reading,
+      cache,
+      memo,
+    ),
     memo,
   ))
   case dict.get(function_map, local_call.function) {
@@ -10685,6 +10809,624 @@ fn resolve_unknown_local(
           )
       }
     }
+  }
+}
+
+// A call back into `local_call`'s function while it is walked up the stack.
+// What that call does with its arguments is the function's own summary, still
+// being computed: it is stated as the function's recursion marker applied to
+// its callback parameters, which the call site binds as it binds any callee's,
+// and the walk of the function resolves. A function with no callback parameter
+// does the same thing whatever it is passed, which the walk up the stack
+// already gathers.
+fn back_edge(
+  local_call: LocalCall,
+  args: List(types.CallArgument),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  cache: LocalCache,
+  memo: Memo,
+) -> List(CollectedCall) {
+  case dict.get(function_map, local_call.function) {
+    Error(Nil) -> []
+    Ok(definition) ->
+      case collapsed(local_call.function, cache) {
+        True ->
+          case dict.get(memo.collapsed_vars, local_call.function) {
+            Ok([_, ..] as variables) -> [
+              plain_call(
+                types.ResolvedCall(
+                  name: QualifiedName(
+                    module: context.module_path,
+                    function: local_call.function,
+                  ),
+                  span: local_call.span,
+                ),
+                effect_term.normalize(TUnion(list.map(variables, TVar))),
+              ),
+            ]
+            _ -> []
+          }
+        False ->
+          case passes_its_frame_on(args, definition, registry, reading) {
+            True -> []
+            False -> [
+              plain_call(
+                types.ResolvedCall(
+                  name: QualifiedName(
+                    module: context.module_path,
+                    function: local_call.function,
+                  ),
+                  span: local_call.span,
+                ),
+                recursion_application(
+                  local_call.function,
+                  recursion_variables(
+                    local_call.function,
+                    definition,
+                    cache,
+                    memo,
+                  ),
+                ),
+              ),
+            ]
+          }
+      }
+  }
+}
+
+// Whether a call back into `definition`'s function passes on each parameter
+// it was handed, wherever a value of the parameter's type may hold a
+// function: the argument is that very parameter, under the binder the frame
+// introduced it with, or its type is proven to hold none. Such a call
+// contributes an effect set the frame's own walk already holds: every summary
+// over an effect set is a constant beside what it runs, so the least fixed
+// point is the walk without the call.
+fn passes_its_frame_on(
+  args: List(types.CallArgument),
+  definition: Definition(Function),
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+) -> Bool {
+  let binder = definition.definition.location.start
+  let parameters = definition.definition.parameters
+  list.length(args) == list.length(parameters)
+  && list.index_map(parameters, fn(parameter, position) {
+    #(parameter, position)
+  })
+  |> list.all(fn(entry) {
+    let #(parameter, position) = entry
+    let arg = case parameter.label {
+      Some(label) ->
+        option.lazy_or(find_arg_by_label(args, label), fn() {
+          find_arg_at_position(args, position)
+        })
+      None -> find_arg_at_position(args, position)
+    }
+    case arg {
+      None -> False
+      Some(arg) ->
+        passed_on(arg, parameter, binder)
+        || holds_no_function(arg, registry, reading)
+    }
+  })
+}
+
+// Whether an argument is the parameter itself, as `binder` introduced it.
+fn passed_on(
+  arg: types.CallArgument,
+  parameter: glance.FunctionParameter,
+  binder: Int,
+) -> Bool {
+  case arg.value, signatures.assignment_name(parameter.name) {
+    types.LocalRef(name:, scope: types.LexicalBinding(binder: bound)), Some(own)
+    -> name == own && bound == binder
+    _, _ -> False
+  }
+}
+
+// Whether every type girard gives an argument is proven to hold no function.
+fn holds_no_function(
+  arg: types.CallArgument,
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+) -> Bool {
+  case typeinfo.types_at(reading, arg.span.start, arg.span.end) {
+    [] -> False
+    types ->
+      list.all(types, fn(type_) {
+        case type_ {
+          Some(type_) ->
+            typedefs.shape(type_, registry.shapes) == typedefs.NoArrows
+          None -> False
+        }
+      })
+  }
+}
+
+// Whether `function` belongs to a component analysed as one union, where a
+// call back in is already gathered by the walk of the component.
+fn collapsed(function: String, cache: LocalCache) -> Bool {
+  case dict.get(cache.scc_id, function) {
+    Ok(scc) -> set.contains(cache.collapsible, scc)
+    Error(Nil) -> False
+  }
+}
+
+// The variables of `function`'s parameters its summary is stated over: what
+// its walk settled on, else its callback parameters.
+fn recursion_variables(
+  function: String,
+  definition: Definition(Function),
+  cache: LocalCache,
+  memo: Memo,
+) -> List(String) {
+  case dict.get(memo.recursion_vars, function) {
+    Ok(variables) -> variables
+    Error(Nil) ->
+      list.map(local_polymorphic_bounds(definition, cache), fn(bound) {
+        bound.name
+      })
+  }
+}
+
+// The walk of `function` over `walk`, with every call back into it stated over
+// a set of its parameters' variables closed under the walk: where the walk
+// names a variable of a parameter the set lacks — a field of a record
+// parameter, or one a call back passes on in another's place — it is walked
+// again from `memo` with that variable added, so the summary binds every way
+// its effects depend on its arguments. The calls back are then resolved.
+fn walk_recursive(
+  function: String,
+  definition: Definition(Function),
+  bound: fn() -> PathBound,
+  cache: LocalCache,
+  memo: Memo,
+  walk: fn(Memo) -> #(List(CollectedCall), Memo),
+) -> #(List(CollectedCall), Memo) {
+  // A function on no cycle is never called back into: its walk names no
+  // marker of its own.
+  let scc = dict.get(cache.scc_id, function) |> result.unwrap(-1)
+  use <- bool.lazy_guard(
+    when: !set.contains(cache.recursive, scc),
+    return: fn() { walk(memo) },
+  )
+  closed_walk(
+    function,
+    definition,
+    recursion_variables(function, definition, cache, memo),
+    bound(),
+    memo,
+    walk,
+  )
+}
+
+// What the variables of a recursive group's calls back in may name, read off
+// the group alone. Every variable the group's first walk names is admitted,
+// `written`: that walk names every path the source writes, and those it
+// builds through calls out of the group. A variable discovered past those is
+// admitted up to `nesting`, the deepest nesting of the types the group's
+// parameters are written with, beyond the longest path the first walk names,
+// since a call back in builds a longer one only out of a value of a type that
+// holds itself. The number discovered is admitted up to the group's
+// `parameters` times the paths so long over the labels its first walk names,
+// `labels` of them. Variables past either read as `[Unknown]`.
+type PathBound {
+  PathBound(
+    // Measured only where a variable outgrows the first walk's longest path.
+    nesting: fn() -> Int,
+    parameters: Int,
+    written: Set(String),
+    longest: Option(Int),
+    labels: Int,
+  )
+}
+
+// The bound of the group `members` form, before its first walk.
+fn path_bound(
+  members: List(String),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  registry: SignatureRegistry,
+) -> PathBound {
+  let parameters =
+    list.fold(members, 0, fn(count, member) {
+      case dict.get(function_map, member) {
+        Ok(definition) -> count + list.length(definition.definition.parameters)
+        Error(Nil) -> count
+      }
+    })
+  let nesting = fn() {
+    list.fold(members, 0, fn(deepest, member) {
+      signatures.lookup(registry, QualifiedName(context.module_path, member))
+      |> option.unwrap([])
+      |> list.fold(deepest, fn(deepest, parameter) {
+        case parameter.annotation {
+          Some(type_) ->
+            int.max(deepest, typedefs.type_nesting(registry.types, type_))
+          None -> deepest
+        }
+      })
+    })
+  }
+  PathBound(nesting:, parameters:, written: set.new(), longest: None, labels: 0)
+}
+
+// The bound once a first walk named `variables`.
+fn bounded_by(bound: PathBound, variables: List(String)) -> PathBound {
+  case bound.longest {
+    Some(_) -> bound
+    None ->
+      PathBound(
+        ..bound,
+        written: set.from_list(variables),
+        longest: Some(
+          list.fold(variables, 0, fn(longest, variable) {
+            int.max(longest, path_length(variable))
+          }),
+        ),
+        labels: list.flat_map(variables, fn(variable) {
+            list.drop(string.split(variable, "."), 1)
+          })
+          |> list.unique
+          |> list.length,
+      )
+  }
+}
+
+// Whether `variables` leave what `bound` admits: of those the first walk did
+// not name, one names a longer path, or there are more of them than paths so
+// long allow.
+fn beyond(bound: PathBound, variables: List(String)) -> Bool {
+  let discovered =
+    list.filter(variables, fn(variable) {
+      !set.contains(bound.written, variable)
+    })
+  let past = fn(depth) {
+    list.any(discovered, fn(variable) { path_length(variable) > depth })
+    || list.length(discovered)
+    > bound.parameters * { depth + 1 } * { bound.labels + 1 }
+  }
+  // Within the first walk's own reach the variables are within any depth
+  // the nesting adds to it.
+  let longest = option.unwrap(bound.longest, 0)
+  past(longest) && past(bound.nesting() + longest)
+}
+
+// How many field labels a variable's path passes.
+fn path_length(variable: String) -> Int {
+  list.length(string.split(variable, ".")) - 1
+}
+
+// The variables only grow, and within the finite set `bound` admits, as
+// `collapsed_rounds`' do; a summary whose variables leave it is read with
+// `[Unknown]` beside it.
+fn closed_walk(
+  function: String,
+  definition: Definition(Function),
+  variables: List(String),
+  bound: PathBound,
+  before: Memo,
+  walk: fn(Memo) -> #(List(CollectedCall), Memo),
+) -> #(List(CollectedCall), Memo) {
+  let #(calls, memo) =
+    walk(
+      Memo(
+        ..before,
+        recursion_vars: dict.insert(before.recursion_vars, function, variables),
+      ),
+    )
+  let marker = recursion_marker(function)
+  let named = calls_free_vars(calls)
+  let walked = parameter_variables(named, definition)
+  let bound = bounded_by(bound, list.append(variables, walked))
+  let missing = case set.contains(named, marker) {
+    False -> []
+    True ->
+      list.filter(walked, fn(variable) { !list.contains(variables, variable) })
+  }
+  case missing, beyond(bound, list.append(variables, missing)) {
+    [], _ -> #(resolved_recursion(calls, function, variables), memo)
+    _, True -> #(
+      resolved_recursion(
+        [
+          plain_call(unknown_call(function, definition), effect_term.unknown()),
+          ..calls
+        ],
+        function,
+        variables,
+      ),
+      memo,
+    )
+    _, False ->
+      closed_walk(
+        function,
+        definition,
+        list.append(variables, missing),
+        bound,
+        before,
+        walk,
+      )
+  }
+}
+
+// A call standing for `function` itself, at its declaration.
+fn unknown_call(
+  function: String,
+  definition: Definition(Function),
+) -> ResolvedCall {
+  types.ResolvedCall(
+    name: QualifiedName(module: "", function:),
+    span: definition.definition.location,
+  )
+}
+
+// The variables among `named` that stand for one of `definition`'s parameters
+// or a path into one, in name order.
+fn parameter_variables(
+  named: Set(String),
+  definition: Definition(Function),
+) -> List(String) {
+  rooted_variables(
+    variables_by_root(named),
+    named_function_params(definition.definition),
+  )
+}
+
+// The variables of `named` that are not recursion markers, by the parameter
+// each is rooted at: read once for every member asking.
+pub fn variables_by_root(
+  named: Set(String),
+) -> dict.Dict(String, List(String)) {
+  set.fold(named, dict.new(), fn(acc, variable) {
+    case is_recursion_marker(variable) {
+      True -> acc
+      False ->
+        dict.upsert(acc, path_root(variable), fn(existing) {
+          [variable, ..option.unwrap(existing, [])]
+        })
+    }
+  })
+}
+
+// The variables `by_root` holds that are rooted at one of `parameters`,
+// sorted.
+pub fn rooted_variables(
+  by_root: dict.Dict(String, List(String)),
+  parameters: Set(String),
+) -> List(String) {
+  parameters
+  |> set.to_list
+  |> list.flat_map(fn(parameter) {
+    dict.get(by_root, parameter) |> result.unwrap([])
+  })
+  |> list.sort(string.compare)
+}
+
+// The lifted operator of a reference to `name`, a function already being walked
+// up the stack, at a site supplying its callbacks at `positions`: as
+// `lift_local_function` abstracts the function's walk, over its recursion
+// marker in place of the walk. A function with no callback parameter
+// contributes nothing beyond what the walk up the stack gathers.
+fn recursive_reference(
+  name: String,
+  definition: Definition(Function),
+  positions: List(Int),
+  cache: LocalCache,
+  memo: Memo,
+) -> EffectTerm {
+  case collapsed(name, cache) {
+    True -> pure_operator(positions)
+    False ->
+      abstract_over_slots(
+        signatures.supplied_slots(
+          cached_callback_slots(definition.definition, cache),
+          positions,
+        ),
+        recursion_application(
+          name,
+          recursion_variables(name, definition, cache, memo),
+        ),
+      )
+  }
+}
+
+// `function`'s recursion marker applied to the variables of its parameters its
+// summary is stated over, in that order.
+fn recursion_application(
+  function: String,
+  variables: List(String),
+) -> EffectTerm {
+  list.fold(variables, TVar(recursion_marker(function)), fn(operator, variable) {
+    types.TApp(operator, TVar(variable))
+  })
+}
+
+// The variable a call back into `function` is stated through until the walk of
+// `function` resolves it.
+fn recursion_marker(function: String) -> String {
+  "<recursion:" <> function <> ">"
+}
+
+// The variable what `function` returns is stated through until the computation
+// of its returned operator resolves it.
+fn returns_marker(function: String) -> String {
+  "<returns:" <> function <> ">"
+}
+
+fn is_recursion_marker(name: String) -> Bool {
+  string.starts_with(name, "<recursion:")
+  || string.starts_with(name, "<returns:")
+}
+
+// What marks `function`'s returned operator as being computed up the stack,
+// beside the walked functions' own names.
+fn returns_key(function: String) -> String {
+  "<returns>" <> function
+}
+
+// Whether `variable` is the marker of a call back into a function, or into a
+// producer's returned operator, whose walk up the stack resolves it.
+fn owned_up_the_stack(variable: String, visited: Set(String)) -> Bool {
+  case variable {
+    "<recursion:" <> rest -> set.contains(visited, string.drop_end(rest, 1))
+    "<returns:" <> rest ->
+      set.contains(visited, returns_key(string.drop_end(rest, 1)))
+    _ -> False
+  }
+}
+
+// The function an entry of the walked set names.
+fn walked_function(entry: String) -> String {
+  case entry {
+    "<returns>" <> function -> function
+    function -> function
+  }
+}
+
+// `calls`, gathered by walking `function` over its callback parameters
+// `bounds`, with each call back into it resolved: the function's summary is the
+// least fixed point of its body over those calls, iterated from pure, and each
+// call back reads that summary applied to its own arguments. Iteration stops at
+// `recursion_fuel` rounds, past which the summary reads `[Unknown]`.
+fn resolved_recursion(
+  calls: List(CollectedCall),
+  function: String,
+  params: List(String),
+) -> List(CollectedCall) {
+  let marker = recursion_marker(function)
+  use <- bool.guard(
+    when: !set.contains(calls_free_vars(calls), marker),
+    return: calls,
+  )
+  let body = union_of(calls)
+  let summary =
+    recursion_fixpoint(
+      marker,
+      params,
+      body,
+      effect_term.pure(),
+      effect_term.unknown(),
+      growth_bound(body, marker),
+      0,
+    )
+  let bindings = dict.from_list([#(marker, summary)])
+  let resolve = fn(term) {
+    case set.contains(effect_term.free_vars(term), marker) {
+      True -> effect_term.normalize(effect_term.subst(term, bindings))
+      False -> term
+    }
+  }
+  list.map(calls, fn(one) {
+    CollectedCall(
+      ..one,
+      resolution: Resolution(
+        ..one.resolution,
+        term: resolve(collected_term(one)),
+        fallback: types.map_fallback(one.resolution.fallback, resolve),
+      ),
+    )
+  })
+}
+
+// The least fixed point of `body` over `marker`, iterated from `current`:
+// `top` over `params` once `bound` rounds pass without the iteration settling,
+// or once a round's term outgrows `work_bound`'s size, which bounds the work of
+// every round's substitution and normalization.
+fn recursion_fixpoint(
+  marker: String,
+  params: List(String),
+  body: EffectTerm,
+  current: EffectTerm,
+  top: EffectTerm,
+  bound: Int,
+  rounds: Int,
+) -> EffectTerm {
+  let next =
+    effect_term.normalize(effect_term.subst(
+      body,
+      dict.from_list([#(marker, wrap_binders(params, current))]),
+    ))
+  case next == current, rounds + 1 >= bound || outgrows(next, body) {
+    True, _ -> wrap_binders(params, next)
+    False, True -> wrap_binders(params, top)
+    False, False ->
+      recursion_fixpoint(marker, params, body, next, top, bound, rounds + 1)
+  }
+}
+
+// Whether a round's term has grown past the work a fixed point of `body` is
+// given: 16 times the size of `body`. A union of `body`'s labels and variables
+// is never larger than `body`; only a term applying an operator to what the
+// last round built grows past it.
+fn outgrows(term: EffectTerm, body: EffectTerm) -> Bool {
+  term_size(term, 0) > 16 * term_size(body, 0)
+}
+
+// How many nodes `term` holds, beside `acc`.
+fn term_size(term: EffectTerm, acc: Int) -> Int {
+  case term {
+    types.TLabels(labels) -> acc + 1 + set.size(labels)
+    types.TUnion(terms) ->
+      list.fold(terms, acc + 1, fn(acc, one) { term_size(one, acc) })
+    types.TApp(operator, argument) ->
+      term_size(argument, term_size(operator, acc + 1))
+    types.TAbs(_, body) -> term_size(body, acc + 1)
+    types.TTop | TVar(_) -> acc + 1
+  }
+}
+
+// How many rounds the fixed point of `body` over `marker` may take. Where
+// `body` applies nothing but `marker`, each round adds one of the labels and
+// variables `body` names, or settles, so it settles within that many rounds
+// and the bound is never reached. Where it applies an operator, a round can
+// build a larger term than the last; such a term is given 32 rounds more.
+fn growth_bound(body: EffectTerm, marker: String) -> Int {
+  let atoms = term_atoms(body)
+  case applies_an_operator(body, marker) {
+    False -> atoms + 2
+    True -> atoms + 34
+  }
+}
+
+// The labels and variables `term` names, counted.
+fn term_atoms(term: EffectTerm) -> Int {
+  let labels = term_labels(term, set.new())
+  set.size(labels) + set.size(effect_term.free_vars(term))
+}
+
+fn term_labels(term: EffectTerm, acc: Set(String)) -> Set(String) {
+  case term {
+    types.TLabels(labels) -> set.union(acc, labels)
+    types.TUnion(terms) ->
+      list.fold(terms, acc, fn(acc, one) { term_labels(one, acc) })
+    types.TApp(operator, argument) ->
+      term_labels(argument, term_labels(operator, acc))
+    types.TAbs(_, body) -> term_labels(body, acc)
+    types.TTop | TVar(_) -> acc
+  }
+}
+
+// Whether `term` applies or abstracts anything but `marker`.
+fn applies_an_operator(term: EffectTerm, marker: String) -> Bool {
+  case term {
+    types.TApp(operator, argument) ->
+      !applies_only(operator, marker) || applies_an_operator(argument, marker)
+    types.TUnion(terms) -> list.any(terms, applies_an_operator(_, marker))
+    types.TAbs(_, _) -> True
+    types.TLabels(_) | types.TTop | TVar(_) -> False
+  }
+}
+
+// Whether `operator` is `marker` applied to arguments that apply nothing.
+fn applies_only(operator: EffectTerm, marker: String) -> Bool {
+  case operator {
+    TVar(name) -> name == marker
+    types.TApp(inner, argument) ->
+      applies_only(inner, marker) && !applies_an_operator(argument, marker)
+    _ -> False
   }
 }
 
@@ -10847,7 +11589,8 @@ fn memoized_local(
   let scc = dict.get(cache.scc_id, function) |> result.unwrap(-1)
   case set.contains(cache.collapsible, scc) {
     True ->
-      collapsed_scc(
+      collapsed_member_view(
+        function,
         scc,
         function_map,
         context,
@@ -10871,18 +11614,17 @@ fn memoized_local(
       case dict.get(memo.locals, key) {
         Ok(cached) -> #(cached, memo)
         Error(Nil) -> {
-          let new_visited = set.insert(visited, function)
           let #(result, memo) =
-            collect_effects(
-              without_returned_closure(local_definition.definition),
+            walk_local(
+              function,
+              local_definition,
+              set.insert(visited, function),
+              nested_bounds,
               function_map,
               context,
               knowledge_base,
-              new_visited,
-              nested_bounds,
               registry,
               reading,
-              FunctionFrame,
               cache,
               memo,
             )
@@ -10891,6 +11633,43 @@ fn memoized_local(
       }
     }
   }
+}
+
+// The body of `function` walked from inside its own frame, its calls back in
+// stated over its parameters' variables.
+fn walk_local(
+  function: String,
+  local_definition: Definition(Function),
+  visited: Set(String),
+  bounds: List(ParamBound),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(CollectedCall), Memo) {
+  use memo <- walk_recursive(
+    function,
+    local_definition,
+    fn() { path_bound([function], function_map, context, registry) },
+    cache,
+    memo,
+  )
+  collect_effects(
+    without_returned_closure(local_definition.definition),
+    function_map,
+    context,
+    knowledge_base,
+    visited,
+    bounds,
+    registry,
+    reading,
+    FunctionFrame,
+    cache,
+    memo,
+  )
 }
 
 // The full-reachability analysis of a collapsible SCC, computed once and shared
@@ -10916,14 +11695,24 @@ fn collapsed_scc(
     Error(Nil), False -> {
       let outer = memo.collapsing
       let memo = Memo(..memo, collapsing: set.insert(outer, scc))
-      let scc_set = set.from_list(members)
-      let #(result, memo) =
-        list.fold(members, #([], memo), fn(state, name) {
-          let #(acc, memo) = state
-          collapsed_member(
-            name,
-            acc,
-            scc_set,
+      let #(result, memo) = case set.contains(cache.recursive, scc) {
+        True ->
+          collapsed_rounds(
+            members,
+            function_map,
+            context,
+            knowledge_base,
+            registry,
+            reading,
+            cache,
+            memo,
+            dict.take(memo.collapsed_vars, members),
+            path_bound(members, function_map, context, registry),
+          )
+        // A component that never calls back into itself is walked once.
+        False ->
+          collapsed_union(
+            members,
             function_map,
             context,
             knowledge_base,
@@ -10932,17 +11721,237 @@ fn collapsed_scc(
             cache,
             memo,
           )
-        })
+      }
       #(
         result,
         Memo(
           ..memo,
           collapsing: outer,
           sccs: dict.insert(memo.sccs, scc, result),
+          member_views: member_views(
+            members,
+            result,
+            function_map,
+            memo.member_views,
+          ),
         ),
       )
     }
   }
+}
+
+// `function`'s answer from its component's union: the view the union's
+// completion stored, or `member_view` of the union while it is still being
+// built.
+fn collapsed_member_view(
+  function: String,
+  scc: Int,
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(CollectedCall), Memo) {
+  case dict.get(memo.member_views, function) {
+    Ok(view) -> #(view, memo)
+    Error(Nil) -> {
+      let #(calls, memo) =
+        collapsed_scc(
+          scc,
+          function_map,
+          context,
+          knowledge_base,
+          registry,
+          reading,
+          cache,
+          memo,
+        )
+      case dict.get(memo.member_views, function) {
+        Ok(view) -> #(view, memo)
+        Error(Nil) -> {
+          let members = dict.get(cache.members, scc) |> result.unwrap([])
+          let views = member_views(members, calls, function_map, dict.new())
+          #(dict.get(views, function) |> result.unwrap(calls), memo)
+        }
+      }
+    }
+  }
+}
+
+// Each member's answer from a collapsed component's union, beside `views`:
+// without the variables of parameters only other members name, which stand
+// for what a call into that member passes, and which each call a member makes
+// back in already states bound to its own arguments.
+fn member_views(
+  members: List(String),
+  calls: List(CollectedCall),
+  function_map: dict.Dict(String, Definition(Function)),
+  views: dict.Dict(String, List(CollectedCall)),
+) -> dict.Dict(String, List(CollectedCall)) {
+  let parameters =
+    list.map(members, fn(member) {
+      #(
+        member,
+        dict.get(function_map, member)
+          |> result.map(fn(definition) {
+            named_function_params(definition.definition)
+          })
+          |> result.unwrap(set.new()),
+      )
+    })
+  let named = calls_free_vars(calls)
+  list.fold(parameters, views, fn(views, entry) {
+    let #(member, own) = entry
+    let foreign =
+      list.fold(parameters, set.new(), fn(acc, other) {
+        case other.0 == member {
+          True -> acc
+          False -> set.union(acc, other.1)
+        }
+      })
+      |> set.difference(own)
+    let dropped =
+      named
+      |> set.filter(fn(variable) { set.contains(foreign, path_root(variable)) })
+      |> set.to_list
+      |> list.map(fn(variable) { #(variable, effect_term.pure()) })
+      |> dict.from_list
+    dict.insert(views, member, case dict.is_empty(dropped) {
+      True -> calls
+      False -> list.map(calls, without_variables(_, dropped))
+    })
+  })
+}
+
+// A collected call with `dropped`'s variables read as nothing.
+fn without_variables(
+  one: CollectedCall,
+  dropped: dict.Dict(String, EffectTerm),
+) -> CollectedCall {
+  CollectedCall(
+    ..one,
+    resolution: Resolution(
+      ..one.resolution,
+      term: effect_term.normalize(effect_term.subst(
+        one.resolution.term,
+        dropped,
+      )),
+    ),
+  )
+}
+
+// The members of a collapsed component walked as one union, each call back in
+// from inside contributing the variables of the callee's parameters the last
+// round's union names, bound to that call's arguments — a field of a record
+// parameter rebound on the way round reaches the walk. Repeated until no
+// member's variables change. The variables only grow, and settle within the
+// finite set a `PathBound` admits; a union whose variables leave it is read
+// with `[Unknown]`.
+fn collapsed_rounds(
+  members: List(String),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  cache: LocalCache,
+  memo: Memo,
+  estimate: dict.Dict(String, List(String)),
+  bound: PathBound,
+) -> #(List(CollectedCall), Memo) {
+  let memo =
+    Memo(..memo, collapsed_vars: dict.merge(memo.collapsed_vars, estimate))
+  let #(result, memo) =
+    collapsed_union(
+      members,
+      function_map,
+      context,
+      knowledge_base,
+      registry,
+      reading,
+      cache,
+      memo,
+    )
+  let by_root = variables_by_root(calls_free_vars(result))
+  let next =
+    list.fold(members, estimate, fn(estimate, member) {
+      case dict.get(function_map, member) {
+        Ok(definition) ->
+          case
+            rooted_variables(
+              by_root,
+              named_function_params(definition.definition),
+            )
+          {
+            [] -> estimate
+            variables -> {
+              let before = dict.get(estimate, member) |> result.unwrap([])
+              list.append(before, variables)
+              |> list.unique
+              |> list.sort(string.compare)
+              |> dict.insert(estimate, member, _)
+            }
+          }
+        Error(Nil) -> estimate
+      }
+    })
+  let settled =
+    list.all(members, fn(member) {
+      dict.get(next, member) == dict.get(estimate, member)
+    })
+  let bound = bounded_by(bound, list.flatten(dict.values(next)))
+  let growing = beyond(bound, list.flatten(dict.values(next)))
+  case settled, growing {
+    True, _ -> #(result, memo)
+    False, True -> #(
+      list.append(reentered_scc(members, function_map, context), result),
+      memo,
+    )
+    False, False ->
+      collapsed_rounds(
+        members,
+        function_map,
+        context,
+        knowledge_base,
+        registry,
+        reading,
+        cache,
+        memo,
+        next,
+        bound,
+      )
+  }
+}
+
+// One walk of a collapsed component's members as one union.
+fn collapsed_union(
+  members: List(String),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(CollectedCall), Memo) {
+  let scc_set = set.from_list(members)
+  list.fold(members, #([], memo), fn(state, name) {
+    let #(acc, memo) = state
+    collapsed_member(
+      name,
+      acc,
+      scc_set,
+      function_map,
+      context,
+      knowledge_base,
+      registry,
+      reading,
+      cache,
+      memo,
+    )
+  })
 }
 
 // Re-entering a component that is being collapsed is a cycle the call graph

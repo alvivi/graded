@@ -20,7 +20,7 @@ import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type EffectTerm, Check,
   EffectAnnotation, Effects, ParamBound, Polymorphic, QualifiedName, Specific,
   TAbs, TApp, TLabels, TVar, UnmatchedFieldBoundWarning,
-  UnmatchedParamBoundWarning, UntrackedEffectWarning, Wildcard,
+  UnmatchedParamBoundWarning, Wildcard,
 }
 import qcheck
 import support
@@ -1601,39 +1601,19 @@ fn check_warnings(
   warnings
 }
 
-// Qualified function reference passed as value emits warning
-pub fn function_ref_qualified_warns_test() {
-  let source =
+// A function reference passed as a value is charged where the callee runs it,
+// qualified or imported unqualified: no warning stands in for the charge.
+pub fn a_function_reference_passed_as_a_value_is_charged_test() {
+  [
     "import gleam/io
 import gleam/list
-pub fn greet_all(names) { list.map(names, io.println) }"
-  let warnings =
-    check_warnings(source, [
-      EffectAnnotation(
-        Check,
-        "greet_all",
-        [],
-        effect_term.from_effect_set(Specific(set.new())),
-        returns: None,
-      ),
-    ])
-  warnings |> list.length() |> should.equal(1)
-  let assert [warning] = warnings
-  let assert UntrackedEffectWarning(function:, reference:, effects:, ..) =
-    warning
-  function |> should.equal("greet_all")
-  reference |> should.equal(QualifiedName("gleam/io", "println"))
-  effects |> should.equal(Specific(set.from_list(["Stdout"])))
-}
-
-// Unqualified function reference passed as value emits warning
-pub fn function_ref_unqualified_warns_test() {
-  let source =
+pub fn greet_all(names) { list.map(names, io.println) }",
     "import gleam/io.{println}
 import gleam/list
-pub fn greet_all(names) { list.map(names, println) }"
-  let warnings =
-    check_warnings(source, [
+pub fn greet_all(names) { list.map(names, println) }",
+  ]
+  |> list.each(fn(source) {
+    let annotations = [
       EffectAnnotation(
         Check,
         "greet_all",
@@ -1641,11 +1621,12 @@ pub fn greet_all(names) { list.map(names, println) }"
         effect_term.from_effect_set(Specific(set.new())),
         returns: None,
       ),
-    ])
-  warnings |> list.length() |> should.equal(1)
-  let assert [warning] = warnings
-  let assert UntrackedEffectWarning(reference:, ..) = warning
-  reference |> should.equal(QualifiedName("gleam/io", "println"))
+    ]
+    check_warnings(source, annotations) |> should.equal([])
+    let assert [violation] = check_source(source, annotations)
+    violation.explanation.actual
+    |> should.equal(Specific(set.from_list(["Stdout"])))
+  })
 }
 
 // A field bound whose `param.field` path matches no field call in the body is

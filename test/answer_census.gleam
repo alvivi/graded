@@ -152,6 +152,7 @@ pub fn shape(kind: checker.CallKind) -> String {
   case kind {
     checker.DirectCall(..) -> "direct"
     checker.ParameterCall(..) -> "parameter"
+    checker.PassedArgumentCall(..) -> "passes"
     checker.FieldAccessCall(..) -> "field"
     checker.ComputedFieldCall(..) -> "computed-field"
     checker.UnresolvedLocalCall(..) -> "unresolved-local"

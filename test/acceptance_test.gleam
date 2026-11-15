@@ -201,8 +201,16 @@ pub fn built_field_relayed() -> Nil {
 "
 
 fn lines() -> List(String) {
+  let root = fixture("build/acceptance_shapes", "")
+  let assert Ok(lines) = graded.inferred_lines(root)
+  support.cleanup(root)
+  lines
+}
+
+fn fixture(directory: String, spec: String) -> String {
   let root =
-    support.write_fixture("build/acceptance_shapes", [
+    support.write_fixture(directory, [
+      #("app.graded", spec),
       #("gleam.toml", "name = \"app\"\nversion = \"1.0.0\"\n"),
       #(
         "manifest.toml",
@@ -225,9 +233,22 @@ fn lines() -> List(String) {
       #("src/app.gleam", app_source),
     ])
   support.install_stdlib(root)
-  let assert Ok(lines) = graded.inferred_lines(root)
+  root
+}
+
+// A printer relayed to a callback that calls it, a printer passed as the
+// callback, and a private printer relayed the same way: each passes the budget
+// its charge states, and nothing warns in place of a charge.
+pub fn relayed_printers_are_charged_without_a_warning_test() {
+  let root =
+    fixture(
+      "build/acceptance_diagnostics",
+      "check app.list_relayed_and_called : [Stdout]\ncheck app.printer_relayed_and_called : [Stdout]\ncheck app.printer_as_the_callback : [Stdout]\n",
+    )
+  let assert Ok(results) = graded.check_project(root)
   support.cleanup(root)
-  lines
+  list.flat_map(results, fn(result) { result.violations }) |> should.equal([])
+  list.flat_map(results, fn(result) { result.warnings }) |> should.equal([])
 }
 
 fn answer(lines: List(String), function: String) -> String {
@@ -268,6 +289,31 @@ pub fn catalogued_shapes_read_the_catalogs_answers_test() {
     let #(function, expected) = row
     #(function, answer(lines, function)) |> should.equal(#(function, expected))
   })
+}
+
+// The two untyped shapes are ones the type inference skips: `coverage` lists
+// each under its error, and each reads `[Unknown]` where its value may run.
+// They name a value nothing defines, which the Gleam compiler rejects; no
+// program the compiler accepts was found that the type inference skips.
+pub fn untyped_shapes_are_skipped_and_read_unknown_test() {
+  let root = fixture("build/acceptance_untyped", "")
+  let assert Ok(report) = graded.run_coverage(root)
+  let assert Ok(lines) = graded.inferred_lines(root)
+  support.cleanup(root)
+  let report_lines = string.split(report, "\n")
+  ["untyped_alias_relayed", "untyped_call_result_relayed"]
+  |> list.map(fn(function) {
+    let skipped =
+      list.any(report_lines, fn(line) {
+        string.starts_with(line, "  app." <> function <> " (")
+        && string.ends_with(line, ": UnboundVariable")
+      })
+    #(function, skipped, answer(lines, function))
+  })
+  |> should.equal([
+    #("untyped_alias_relayed", True, "[Unknown]"),
+    #("untyped_call_result_relayed", True, "[Unknown]"),
+  ])
 }
 
 // A dependency's committed summary over a closure calling a relayed

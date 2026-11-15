@@ -10,6 +10,7 @@ import girard
 import glance
 import gleam/bool
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -63,6 +64,64 @@ pub fn merge(a: TypeRegistry, b: TypeRegistry) -> TypeRegistry {
 
 pub fn is_empty(registry: TypeRegistry) -> Bool {
   dict.is_empty(registry.definitions)
+}
+
+// The deepest nesting of custom types a value of `type_` holds: the longest
+// chain of its type, the type of one of its fields, the type of one of that
+// type's fields, and so on, through no type twice. A path into such a value
+// passes through a type that holds itself once it is longer than this.
+pub fn type_nesting(registry: TypeRegistry, type_: TypeExpr) -> Int {
+  deepest_of(registry, [type_], set.new(), dict.new()).0
+}
+
+fn nesting_of(
+  registry: TypeRegistry,
+  key: #(String, String),
+  open: Set(#(String, String)),
+  memo: Dict(#(String, String), Int),
+) -> #(Int, Dict(#(String, String), Int)) {
+  use <- bool.guard(when: set.contains(open, key), return: #(0, memo))
+  case dict.get(memo, key) {
+    Ok(depth) -> #(depth, memo)
+    Error(Nil) -> {
+      let open = set.insert(open, key)
+      let #(depth, memo) =
+        dict.get(registry.definitions, key)
+        |> result.unwrap([])
+        |> list.fold(#(0, memo), fn(state, definition) {
+          let #(deepest, memo) = state
+          let #(level, fields) = case definition {
+            CustomDefinition(variants:, ..) -> #(1, list.flatten(variants))
+            AliasDefinition(aliased:, ..) -> #(0, [aliased])
+            ExternalDefinition(..) -> #(0, [])
+          }
+          let #(inner, memo) = deepest_of(registry, fields, open, memo)
+          #(int.max(deepest, level + inner), memo)
+        })
+      #(depth, dict.insert(memo, key, depth))
+    }
+  }
+}
+
+fn deepest_of(
+  registry: TypeRegistry,
+  types: List(TypeExpr),
+  open: Set(#(String, String)),
+  memo: Dict(#(String, String), Int),
+) -> #(Int, Dict(#(String, String), Int)) {
+  list.fold(types, #(0, memo), fn(state, type_) {
+    let #(deepest, memo) = state
+    let #(depth, memo) = case type_ {
+      NamedExpr(module:, name:, arguments:) -> {
+        let #(own, memo) = nesting_of(registry, #(module, name), open, memo)
+        let #(held, memo) = deepest_of(registry, arguments, open, memo)
+        #(own + held, memo)
+      }
+      TupleExpr(elements:) -> deepest_of(registry, elements, open, memo)
+      FnExpr(..) | ParamExpr(..) | VarExpr(..) | UnresolvedExpr -> #(0, memo)
+    }
+    #(int.max(deepest, depth), memo)
+  })
 }
 
 // Every custom type and alias one module defines that is compiled on some of

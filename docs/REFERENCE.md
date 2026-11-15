@@ -640,35 +640,23 @@ returned from a call. The full design and the property suite are in
 ### References passed as values
 
 A function *reference* passed as a value rather than called — `list.map(lines,
-io.println)`, `Handler(on_click: dom.focus)` — carries its effects to wherever
-that value is finally called, which may be past anything graded checks. When the
-reference's effects are known and not pure, graded warns at the site that passes
-it:
+io.println)`, `run_all([loud])`, `Handler(on_click: dom.focus)` — is charged
+where the code it is handed may run it. A callee whose line describes the
+argument charges what the line says: a bounded callback its cost, a relayed
+element what the relay hands the callback. A callee that may run an argument
+its line does not describe — a written line without `runs`, a callee nothing
+declares, a call to the function's own callback parameter, a field call —
+charges what the argument carries, and the charge explains itself as the
+argument it came with:
 
 ```
-src/app.gleam: warning: greet_all passes gleam/io.println as a value — its effects [Stdout] won't be tracked
+src/app.gleam: pass_loud passes a list or tuple to `app/ffi.run_all`, which may run it, with effects [Stdout] but declared []
 ```
 
-The quoted set is what a *call* to that name resolves to, read through the same
-boundary a call goes through: a stale `effects` line over an `@external` is never
-quoted, since no caller of that name is charged it either.
-
-A set that mixes a known effect with `[Unknown]` warns and quotes both halves —
-the known half is a real effect travelling past whatever would track it:
-
-```
-src/app.gleam: warning: pass_loud passes dep/fs.read as a value — its effects [Disk, Unknown] won't be tracked
-```
-
-A reference whose whole effect set is `[Unknown]` stays **silent**, as does a
-pure one: an unresolved reference has nothing to report, and warning about it
-would read as a quoted effect. So does any reference in a body that never runs —
-an `@external` covering every target the build compiles keeps its Gleam body as
-dead text.
-
-Warnings are counted separately from violations and never fail a check: `graded
-check` prints them, reports `graded: N warning(s)`, and still exits zero when no
-budget was exceeded.
+What a value carries is read from its type where one is inferred, and from the
+value otherwise: a reference, a closure, a capture, a literal, or a list,
+tuple or record whose every part is read. A value nothing reads carries
+`[Unknown]`. No warning stands in for a charge.
 
 ## Type field effects
 
