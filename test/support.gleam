@@ -8,6 +8,7 @@ import gleam/string
 import graded
 import graded/internal/config
 import graded/internal/effects
+import graded/internal/signatures
 import simplifile
 
 // A `gleam.toml` for a package built for both targets. What a library its
@@ -360,4 +361,51 @@ pub fn write_project_with_dependency(
       dep_files,
     ]),
   )
+}
+
+// Parameter signatures for the catalogued packages graded itself installs,
+// read from `build/packages` as a run reads a project's dependencies.
+pub fn dependency_registry() -> signatures.SignatureRegistry {
+  use registry, package <- list.fold(
+    ["gleam_stdlib", "simplifile", "gleam_json", "gleam_regexp"],
+    signatures.empty(),
+  )
+  use registry, module_path, _path, parsed <- signatures.fold_source_dir(
+    "build/packages/" <> package <> "/src",
+    registry,
+  )
+  case parsed {
+    Ok(module) ->
+      signatures.merge(
+        registry,
+        signatures.from_glance_module(module_path, module),
+      )
+    Error(Nil) -> registry
+  }
+}
+
+// Install graded's own copy of the standard library's source into a fixture
+// whose manifest names it, as a project that resolved its dependencies has it.
+pub fn install_stdlib(root: String) -> Nil {
+  let target = root <> "/build/packages/gleam_stdlib"
+  let assert Ok(Nil) = simplifile.create_directory_all(target)
+  let assert Ok(Nil) =
+    simplifile.copy_directory(
+      "build/packages/gleam_stdlib/src",
+      target <> "/src",
+    )
+  let assert Ok(Nil) =
+    simplifile.copy_file(
+      "build/packages/gleam_stdlib/gleam.toml",
+      target <> "/gleam.toml",
+    )
+  let packages = root <> "/build/packages/packages.toml"
+  case simplifile.is_file(packages) {
+    Ok(True) -> Nil
+    Ok(False) | Error(_) -> {
+      let assert Ok(Nil) =
+        simplifile.write(packages, "[packages]\ngleam_stdlib = \"1.0.3\"\n")
+      Nil
+    }
+  }
 }

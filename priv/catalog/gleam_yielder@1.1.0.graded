@@ -1,3 +1,37 @@
 // gleam_yielder — pure lazy iterators
 
 assume gleam/yielder : []
+
+// gleam_yielder — what the reviewed functions do with the functions they are given
+assume gleam/yielder.all(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [yielder], relay : predicate(yielder)
+assume gleam/yielder.any(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [yielder], relay : predicate(yielder)
+assume gleam/yielder.at(yielder: [yielder]) : [] where runs : [yielder]
+assume gleam/yielder.chunk(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(yielder)
+assume gleam/yielder.drop_while(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(yielder)
+assume gleam/yielder.each(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(yielder)
+assume gleam/yielder.filter(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(yielder)
+assume gleam/yielder.filter_map(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(yielder)
+assume gleam/yielder.find(haystack: [haystack], is_desired: [is_desired]) : [is_desired] where runs : [haystack], relay : is_desired(haystack)
+assume gleam/yielder.find_map(haystack: [haystack], is_desired: [is_desired]) : [is_desired] where runs : [haystack], relay : is_desired(haystack)
+assume gleam/yielder.first(yielder: [yielder]) : [] where runs : [yielder]
+assume gleam/yielder.flat_map(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(yielder)
+assume gleam/yielder.fold(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(_, yielder)
+assume gleam/yielder.fold_until(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(_, yielder)
+assume gleam/yielder.group(yielder: [yielder], key: [key]) : [key] where runs : [yielder], relay : key(yielder)
+assume gleam/yielder.iterate(f: [f]) : [f] where runs : []
+assume gleam/yielder.last(yielder: [yielder]) : [] where runs : [yielder]
+assume gleam/yielder.length(yielder: [yielder]) : [] where runs : [yielder]
+assume gleam/yielder.map(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(yielder)
+assume gleam/yielder.map2(yielder1: [yielder1], yielder2: [yielder2], fun: [fun]) : [fun] where runs : [], relay : fun(yielder1, yielder2)
+assume gleam/yielder.once(f: [f]) : [f] where runs : []
+assume gleam/yielder.reduce(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(_, yielder)
+assume gleam/yielder.repeatedly(f: [f]) : [f] where runs : []
+assume gleam/yielder.run(yielder: [yielder]) : [] where runs : [yielder]
+assume gleam/yielder.scan(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(_, yielder)
+assume gleam/yielder.step(yielder: [yielder]) : [] where runs : [yielder]
+assume gleam/yielder.take_while(yielder: [yielder], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(yielder)
+assume gleam/yielder.to_list(yielder: [yielder]) : [] where runs : [yielder]
+assume gleam/yielder.transform(yielder: [yielder], f: [f]) : [f] where runs : [], relay : f(_, yielder)
+assume gleam/yielder.try_fold(yielder: [yielder], f: [f]) : [f] where runs : [yielder], relay : f(_, yielder)
+assume gleam/yielder.unfold(f: [f]) : [f] where runs : []
+assume gleam/yielder.yield(next: [next]) : [next] where runs : []

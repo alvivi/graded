@@ -1020,6 +1020,24 @@ pub fn run() -> Nil {
 pub fn run_infer_honours_spec_file_externals_test() {
   let directory =
     make_fixture("externals_in_infer", [
+      // The third-party package is installed, so its source is there to read.
+      #(
+        "manifest.toml",
+        "packages = [
+  { name = \"gleam_stdlib\", version = \"0.71.0\" },
+  { name = \"dee\", version = \"1.0.0\" },
+]
+",
+      ),
+      #("build/packages/packages.toml", "[packages]\ndee = \"1.0.0\"\n"),
+      #(
+        "build/packages/dee/gleam.toml",
+        "name = \"dee\"\nversion = \"1.0.0\"\n",
+      ),
+      #(
+        "build/packages/dee/src/dee/decimal.gleam",
+        "pub fn add(a: String, b: String) -> String {\n  a <> b\n}\n",
+      ),
       #(
         "app/main.gleam",
         "import dee/decimal

@@ -3,6 +3,7 @@ import glance.{
 }
 import gleam/bool
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -44,8 +45,9 @@ type LocalBinding {
   // alias stands for (single-segment for a bare parameter), so a later use as a
   // receiver argument re-keys a callee field-effect variable onto it — exactly
   // as the un-aliased path would. Opaque (`[Unknown]`) everywhere except
-  // call-site field forwarding.
-  BoundReceiverPath(path: String)
+  // call-site field forwarding. `root` is the binder of the parameter the path
+  // starts at.
+  BoundReceiverPath(path: String, root: Int)
   // A closure's own parameter, bound while walking the closure body. A call
   // to it is a callback invocation whose effect is accounted where the
   // closure is applied (operator lifting), so it contributes nothing to the
@@ -64,7 +66,7 @@ type LocalBinding {
   // visible where the closure was written, carried so re-analysis resolves them.
   BoundClosure(
     params: List(String),
-    captures: List(#(String, ArgumentValue)),
+    captures: List(types.Captured),
     body: List(glance.Statement),
   )
   // A let-bound `case`/`if` over function-like options (`let h = case c { … }`).
@@ -103,7 +105,7 @@ type OptionCall {
   // An inline closure, whose every parameter binds an argument.
   ClosureOption(
     params: List(String),
-    captures: List(#(String, ArgumentValue)),
+    captures: List(types.Captured),
     body: List(glance.Statement),
   )
   // A closure's own parameter, charged where its closure is applied, or a
@@ -128,17 +130,27 @@ type FieldCoverage {
 }
 
 // The lexical environment threaded through a body walk: what each in-scope
-// name is bound to.
+// name is bound to, and the offset of the binder that bound it.
 type Env {
-  Env(bindings: Dict(String, LocalBinding))
+  Env(bindings: Dict(String, LocalBinding), binders: Dict(String, Int))
 }
 
 fn env_new() -> Env {
-  Env(bindings: dict.new())
+  Env(bindings: dict.new(), binders: dict.new())
 }
 
-fn env_bind(env: Env, name: String, binding: LocalBinding) -> Env {
-  Env(bindings: dict.insert(env.bindings, name, binding))
+// Bind `name` to `binding`, introduced by the binder at offset `binder`.
+fn env_bind(env: Env, name: String, binder: Int, binding: LocalBinding) -> Env {
+  Env(
+    bindings: dict.insert(env.bindings, name, binding),
+    binders: dict.insert(env.binders, name, binder),
+  )
+}
+
+// The offset of the binder `name` is bound by, `Error(Nil)` where no binding
+// covers it.
+fn env_binder(env: Env, name: String) -> Result(Int, Nil) {
+  dict.get(env.binders, name)
 }
 
 // What `name` is bound to, `Error(Nil)` where the env does not hold it — which
@@ -198,6 +210,10 @@ pub type ImportContext {
     // tell a same-module function wired into a constructor field (a traceable
     // `FieldValue`) apart from an opaque local of the same shape.
     functions: Set(String),
+    // Where the module's own top-level functions start: the binders of the
+    // parameters a field path may be rooted at, which only a function's callers
+    // bind.
+    function_sites: Set(Int),
     // Same-module update builders (bare name -> signature) and other modules'
     // builders (keyed by `#(defining module, function)`), so a call to one
     // (`with_resolver(base, http)`) builds an `Updated` overlay of its base.
@@ -211,17 +227,7 @@ pub type ImportContext {
     // only one of the two readings answers. Every target until a caller narrows
     // it.
     package_targets: types.PackageTargets,
-    // The latent-effect reading of the run the walk belongs to.
-    lat_mode: types.LatMode,
   )
-}
-
-// Record the latent-effect reading of the run the walk belongs to.
-pub fn with_lat_mode(
-  context: ImportContext,
-  mode: types.LatMode,
-) -> ImportContext {
-  ImportContext(..context, lat_mode: mode)
 }
 
 // Record which targets the package under analysis is compiled for.
@@ -348,6 +354,11 @@ pub fn build_import_context(module: Module) -> ImportContext {
   let functions =
     list.map(module.functions, fn(definition) { definition.definition.name })
     |> set.from_list()
+  let function_sites =
+    list.map(module.functions, fn(definition) {
+      definition.definition.location.start
+    })
+    |> set.from_list()
   ImportContext(
     module_path: "",
     aliases:,
@@ -359,10 +370,10 @@ pub fn build_import_context(module: Module) -> ImportContext {
     cross_factories: dict.new(),
     fn_typed_fields: set.new(),
     functions:,
+    function_sites:,
     updates: dict.new(),
     cross_updates: dict.new(),
     package_targets: types.all_targets(),
-    lat_mode: types.Inactive,
   )
 }
 
@@ -699,11 +710,16 @@ fn factory_signature(
     Some(alias) -> dict.get(context.aliases, alias) |> option.from_result
     None -> None
   }
-  // Reuse the constructor field-routing: classify the call (empty env, so a
-  // bare parameter reference classifies as `LocalRef(name)`), then keep the
-  // fields whose value is one of the function's parameters.
+  // Reuse the constructor field-routing: classify the call in the scope in
+  // effect at it, then keep the fields whose value is one of the function's
+  // parameters — a name an earlier binding rebinds is not.
+  let init = case list.reverse(function.body) {
+    [_tail, ..init_reversed] -> list.reverse(init_reversed)
+    [] -> []
+  }
+  let env = pre_tail_env(init, function, context)
   let #(fields, components) = case
-    classify_constructor(constructor, module, arguments, context, env_new())
+    classify_constructor(constructor, module, arguments, context, env)
   {
     BoundConstructor(fields:, components:, ..) -> #(fields, components)
     _ -> #(dict.new(), [])
@@ -714,10 +730,7 @@ fn factory_signature(
   // parameters.
   let coverage = case
     list.all(components, fn(component) {
-      case component.value {
-        LocalRef(name) -> dict.has_key(param_positions, name)
-        _ -> False
-      }
+      result.is_ok(parameter_position(component.value, param_positions))
     })
   {
     True -> types.WholeValue
@@ -725,13 +738,9 @@ fn factory_signature(
   }
   let field_to_param =
     dict.fold(fields, dict.new(), fn(acc, label, value) {
-      case value {
-        LocalRef(name) ->
-          case dict.get(param_positions, name) {
-            Ok(position) -> dict.insert(acc, label, position)
-            Error(Nil) -> acc
-          }
-        _ -> acc
+      case parameter_position(value, param_positions) {
+        Ok(position) -> dict.insert(acc, label, position)
+        Error(Nil) -> acc
       }
     })
   // The module the constructor is defined in — this one when the call is
@@ -923,12 +932,7 @@ fn update_signature(
   // from the call site.
   let env = pre_tail_env(init, function, context)
   let param_positions = param_position_map(function)
-  let live_param = fn(value) {
-    case value {
-      LocalRef(name) -> dict.get(param_positions, name)
-      _ -> Error(Nil)
-    }
-  }
+  let live_param = parameter_position(_, param_positions)
   // The base record must be a live parameter, so the call site supplies it.
   use base_param <- result.try(
     live_param(classify_expression(record, context, env)),
@@ -973,7 +977,7 @@ fn pre_tail_env(
   function: glance.Function,
   context: ImportContext,
 ) -> Env {
-  bind_statements(init, context, seed_parameters(function.parameters))
+  bind_statements(init, context, seed_parameters(function))
 }
 
 // Thread a run of statements' bindings into the environment, in order — the
@@ -989,7 +993,7 @@ fn bind_statements(
       glance.Assignment(pattern:, value:, ..) ->
         bind_assignment(pattern, value, context, acc)
       glance.Use(patterns:, ..) -> bind_use_patterns(patterns, acc)
-      _ -> acc
+      glance.Assert(..) | glance.Expression(..) -> acc
     }
   })
 }
@@ -1053,17 +1057,33 @@ fn constructor_call_parts(
   }
 }
 
-// Each named parameter's position (0-based) in a function's parameter list.
-fn param_position_map(function: glance.Function) -> Dict(String, Int) {
+// Each named parameter's position (0-based) in a function's parameter list,
+// keyed by its name and binder: a reference is the parameter only where it
+// names that binder.
+fn param_position_map(function: glance.Function) -> Dict(#(String, Int), Int) {
+  let binder = function.location.start
   function.parameters
   |> list.index_map(fn(parameter, index) { #(parameter, index) })
   |> list.fold(dict.new(), fn(acc, pair) {
     let #(parameter, index) = pair
     case parameter.name {
-      glance.Named(name) -> dict.insert(acc, name, index)
+      glance.Named(name) -> dict.insert(acc, #(name, binder), index)
       glance.Discarded(_) -> acc
     }
   })
+}
+
+// The position of the parameter a bare reference names, `Error(Nil)` for any
+// other value.
+fn parameter_position(
+  value: ArgumentValue,
+  positions: Dict(#(String, Int), Int),
+) -> Result(Int, Nil) {
+  case value {
+    LocalRef(name:, scope: types.LexicalBinding(binder:)) ->
+      dict.get(positions, #(name, binder))
+    _ -> Error(Nil)
+  }
 }
 
 // Extraction entry points and scope walk
@@ -1164,42 +1184,35 @@ pub fn extract_function_calls(
   function: glance.Function,
   context: ImportContext,
 ) -> ExtractResult {
-  walk_scope(function.body, context, seed_parameters(function.parameters))
+  walk_scope(function.body, context, seed_parameters(function))
 }
 
-// Extract a function body's calls, seeding both the function's parameters and a
-// set of captured callable bindings (`name -> value`) into the lexical scope.
-// Used to re-analyse a closure with the callables in scope at its creation site,
-// so a captured `let suffix = string.append` resolves to its effect rather than
-// `[Unknown]`. Parameters are seeded last, shadowing any capture of the same name.
-pub fn extract_function_calls_with_captures(
-  function: glance.Function,
+// Extract the calls of a closure analysed apart from where it was written: the
+// bindings it captured, then its own parameters, which shadow a capture of the
+// same name and are bound at the closure's site, where the bounds the analysis
+// seeds for them answer their calls.
+pub fn extract_closure_calls(
+  params: List(String),
+  captures: List(types.Captured),
+  body: List(Statement),
   context: ImportContext,
-  captures: List(#(String, ArgumentValue)),
 ) -> ExtractResult {
-  let seeded = seed_captures(captures)
-  let env = bind_names(seeded, names(function.parameters), BoundLocal)
-  walk_scope(function.body, context, env)
+  let env =
+    bind_closure_names(seed_captures(captures), params, body, BoundLocal)
+  walk_scope(body, context, env)
 }
 
 // An inline closure's tail expression as a component: classified with the
-// closure's own parameters and the callables it captured in scope, so a
-// parameter reads as the reference it is. `None` where the body does not end
-// in an expression.
+// closure's own parameters and the bindings it captured, so a parameter reads
+// as the reference it is. `None` where the body does not end in an expression.
 pub fn closure_tail(
   params: List(String),
-  captures: List(#(String, ArgumentValue)),
+  captures: List(types.Captured),
   body: List(glance.Statement),
   context: ImportContext,
 ) -> Option(types.Component) {
-  let seeded = seed_captures(captures)
   let env =
-    list.fold(params, seeded, fn(env, param) {
-      case param {
-        "_" -> env
-        name -> env_bind(env, name, BoundParam)
-      }
-    })
+    bind_closure_names(seed_captures(captures), params, body, BoundParam)
   use #(tail, inner) <- option.map(block_tail(body, context, env))
   types.Component(
     span: tail.location,
@@ -1207,10 +1220,51 @@ pub fn closure_tail(
   )
 }
 
-// The callables a closure captured, bound in a fresh scope.
-fn seed_captures(captures: List(#(String, ArgumentValue))) -> Env {
+// The offset a closure's parameters are bound at: the start of its body, or -1
+// for an empty body, where nothing can name them.
+pub fn closure_site(body: List(Statement)) -> Int {
+  case body {
+    [statement, ..] -> statement_start(statement)
+    [] -> -1
+  }
+}
+
+fn statement_start(statement: Statement) -> Int {
+  case statement {
+    glance.Use(location:, ..) -> location.start
+    glance.Assignment(location:, ..) -> location.start
+    glance.Assert(location:, ..) -> location.start
+    // Every `glance.Expression` variant carries a `location` field.
+    glance.Expression(expression) -> expression.location.start
+  }
+}
+
+// Bind a closure's parameter names to `binding` at the closure's site; a
+// discarded parameter (`_`) binds nothing.
+fn bind_closure_names(
+  env: Env,
+  params: List(String),
+  body: List(Statement),
+  binding: LocalBinding,
+) -> Env {
+  let site = closure_site(body)
+  list.fold(params, env, fn(env, param) {
+    case param {
+      "_" -> env
+      name -> env_bind(env, name, site, binding)
+    }
+  })
+}
+
+// The bindings a closure captured, bound in a fresh scope at their own binders.
+fn seed_captures(captures: List(types.Captured)) -> Env {
   list.fold(captures, env_new(), fn(env, capture) {
-    env_bind(env, capture.0, binding_from_argument_value(capture.1))
+    env_bind(
+      env,
+      capture.name,
+      capture.binder,
+      binding_from_argument_value(capture.value),
+    )
   })
 }
 
@@ -1222,10 +1276,12 @@ fn names(
 }
 
 // Map a classified argument value back to the lexical binding a bare reference
-// to it would carry — the inverse of `classify_local_binding` for the callable
-// shapes. Non-callable shapes become `BoundOpaque`. A captured choice was read
-// where it was bound, so a bare name among its options is one no binding here
-// covers: a call reads it by the bounds the body is walked under.
+// to it would carry — the inverse of `classify_local_binding`. A parameter's
+// reference is a parameter again, read by the bounds the body is walked under,
+// and anything opaque stays opaque, so a body's call to it never reads a module
+// function of the same name. A captured choice was read where it was bound, so
+// a bare name among its options is one no binding here covers: a call reads it
+// by the bounds the body is walked under.
 fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
   case value {
     FunctionRef(name:) -> BoundFunctionRef(name:)
@@ -1245,95 +1301,168 @@ fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
     types.Updated(base:, fields:, components:) ->
       BoundUpdated(base:, fields:, components:)
     types.Composite(elements:) -> BoundComposite(elements:)
-    LocalRef(..)
-    | ConstructorRef
-    | types.ReceiverPath(..)
+    LocalRef(..) -> BoundLocal
+    types.ReceiverPath(path:, root: types.LexicalBinding(binder:), wired: None) ->
+      BoundReceiverPath(path, binder)
+    ConstructorRef
+    | types.ReceiverPath(wired: Some(_), ..)
+    | types.ReceiverPath(root: types.ModuleDefinition, ..)
     | OtherExpression
     | types.Capture(..) -> BoundOpaque
   }
 }
 
-// The callable bindings in scope, as `name -> value` pairs, excluding the
-// closure's own parameters (which shadow an outer binding of the same name).
-// Only callable shapes are kept — they're the only captures that carry effects.
-fn callable_captures(
+// The bindings among `names` that cover a name here, excluding the closure's
+// own parameters (which shadow an outer binding of the same name): each as the
+// value a reference to it denotes here, with its binder. `names` are every name
+// the body spells, a superset of the ones it reads from here — a name the body
+// binds itself is rebound over the capture where the body is read again.
+fn captured_bindings(
   env: Env,
+  names: Set(String),
   params: List(String),
-) -> List(#(String, ArgumentValue)) {
-  env.bindings
-  |> dict.to_list
-  |> list.filter_map(fn(entry) {
-    let #(name, binding) = entry
-    // A parameter shadows an outer binding of the same name, so it's not a
-    // capture. Otherwise keep only the callable shapes — the bindings that
-    // carry an effect.
-    case list.contains(params, name), binding {
-      False, BoundFunctionRef(..)
-      | False, BoundClosure(..)
-      | False, BoundReturnedOperator(..)
-      -> Ok(#(name, classify_local_binding(binding, name)))
-      False, BoundChoice(options:, ..) ->
-        Ok(#(name, types.Choice(unshadowed_options(options, params))))
-      _, _ -> Error(Nil)
-    }
+) -> List(types.Captured) {
+  names
+  |> set.to_list
+  |> list.sort(string.compare)
+  |> list.filter_map(fn(name) {
+    use <- bool.guard(when: list.contains(params, name), return: Error(Nil))
+    use binding <- result.try(env_get(env, name))
+    use binder <- result.map(env_binder(env, name))
+    types.Captured(
+      name:,
+      binder:,
+      value: classify_local_binding(binding, name, binder),
+    )
   })
-  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
 }
 
-// A captured choice's options as the closure's body reaches them. They were
-// read where the choice was bound, so a bare name one of `params` shadows names
-// nothing the body can reach, and reads as an untraceable value.
-fn unshadowed_options(
-  options: List(ArgumentValue),
-  params: List(String),
-) -> List(ArgumentValue) {
-  list.map(options, fn(option) {
-    case option {
-      LocalRef(name:) ->
-        case list.contains(params, name) {
-          True -> OtherExpression
-          False -> option
+// Every name a run of statements spells as a variable or a shorthand field, at
+// any depth: a superset of the names it reads from the scope around it.
+fn spelled_names(statements: List(Statement)) -> Set(String) {
+  list.fold(statements, set.new(), spelled_in_statement)
+}
+
+fn spelled_in_statement(acc: Set(String), statement: Statement) -> Set(String) {
+  case statement {
+    glance.Use(function:, ..) -> spelled_in(acc, function)
+    glance.Assignment(kind:, value:, ..) -> {
+      let acc = spelled_in(acc, value)
+      case kind {
+        glance.LetAssert(message: Some(message)) -> spelled_in(acc, message)
+        glance.LetAssert(message: None) | glance.Let -> acc
+      }
+    }
+    glance.Assert(expression:, message:, ..) ->
+      spelled_in_option(spelled_in(acc, expression), message)
+    glance.Expression(expression) -> spelled_in(acc, expression)
+  }
+}
+
+fn spelled_in_option(
+  acc: Set(String),
+  expression: Option(Expression),
+) -> Set(String) {
+  case expression {
+    Some(expression) -> spelled_in(acc, expression)
+    None -> acc
+  }
+}
+
+fn spelled_in_fields(
+  acc: Set(String),
+  fields: List(Field(Expression)),
+) -> Set(String) {
+  list.fold(fields, acc, fn(acc, field) {
+    case field {
+      glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+        spelled_in(acc, item)
+      glance.ShorthandField(label:, ..) -> set.insert(acc, label)
+    }
+  })
+}
+
+fn spelled_in(acc: Set(String), expression: Expression) -> Set(String) {
+  case expression {
+    glance.Variable(name:, ..) -> set.insert(acc, name)
+    glance.Int(..) | glance.Float(..) | glance.String(..) -> acc
+    glance.NegateInt(value:, ..) | glance.NegateBool(value:, ..) ->
+      spelled_in(acc, value)
+    glance.Block(statements:, ..) | glance.Fn(body: statements, ..) ->
+      list.fold(statements, acc, spelled_in_statement)
+    glance.Panic(message:, ..) | glance.Todo(message:, ..) ->
+      spelled_in_option(acc, message)
+    glance.Tuple(elements:, ..) -> list.fold(elements, acc, spelled_in)
+    glance.List(elements:, rest:, ..) ->
+      spelled_in_option(list.fold(elements, acc, spelled_in), rest)
+    glance.RecordUpdate(record:, fields:, ..) ->
+      list.fold(fields, spelled_in(acc, record), fn(acc, field) {
+        case field.item {
+          Some(item) -> spelled_in(acc, item)
+          None -> set.insert(acc, field.label)
         }
-      types.Choice(nested) -> types.Choice(unshadowed_options(nested, params))
-      FunctionRef(..)
-      | ConstructorRef
-      | types.Closure(..)
-      | types.ReturnedOperator(..)
-      | types.ReceiverPath(..)
-      | Constructed(..)
-      | types.CallResult(..)
-      | types.Updated(..)
-      | types.Composite(..)
-      | OtherExpression
-      | types.Capture(..) -> option
-    }
-  })
+      })
+    glance.FieldAccess(container:, ..) -> spelled_in(acc, container)
+    glance.Call(function:, arguments:, ..) ->
+      spelled_in_fields(spelled_in(acc, function), arguments)
+    glance.TupleIndex(tuple:, ..) -> spelled_in(acc, tuple)
+    glance.FnCapture(function:, arguments_before:, arguments_after:, ..) ->
+      spelled_in(acc, function)
+      |> spelled_in_fields(arguments_before)
+      |> spelled_in_fields(arguments_after)
+    glance.BitString(segments:, ..) ->
+      list.fold(segments, acc, fn(acc, segment) { spelled_in(acc, segment.0) })
+    glance.Case(subjects:, clauses:, ..) ->
+      list.fold(clauses, list.fold(subjects, acc, spelled_in), fn(acc, clause) {
+        spelled_in_option(spelled_in(acc, clause.body), clause.guard)
+      })
+    glance.BinaryOperator(left:, right:, ..) ->
+      spelled_in(spelled_in(acc, left), right)
+    glance.Echo(expression:, message:, ..) ->
+      spelled_in_option(spelled_in_option(acc, expression), message)
+  }
 }
 
-// Seed each named top-level parameter as `BoundLocal`. Discarded parameters
-// (`_`) bind nothing.
-fn seed_parameters(parameters: List(glance.FunctionParameter)) -> Env {
-  bind_names(env_new(), names(parameters), BoundLocal)
+// Seed each named top-level parameter as `BoundLocal`, bound at the function's
+// own start. Discarded parameters (`_`) bind nothing.
+fn seed_parameters(function: glance.Function) -> Env {
+  bind_names(
+    env_new(),
+    names(function.parameters),
+    function.location.start,
+    BoundLocal,
+  )
 }
 
-// Bind each named parameter to `binding` in `env`; discarded parameters (`_`)
-// bind nothing.
+// Bind each named parameter to `binding` in `env` at the offset `binder`;
+// discarded parameters (`_`) bind nothing.
 fn bind_names(
   env: Env,
   names: List(glance.AssignmentName),
+  binder: Int,
   binding: LocalBinding,
 ) -> Env {
   list.fold(names, env, fn(env, name) {
     case name {
-      glance.Named(name) -> env_bind(env, name, binding)
+      glance.Named(name) -> env_bind(env, name, binder, binding)
       glance.Discarded(_) -> env
     }
   })
 }
 
-// Bind a closure's parameters as `BoundParam` in a child scope.
-fn bind_closure_params(env: Env, parameters: List(glance.FnParameter)) -> Env {
-  bind_names(env, list.map(parameters, fn(p) { p.name }), BoundParam)
+// Bind a closure's parameters as `BoundParam` in a child scope, at the
+// closure's site.
+fn bind_closure_params(
+  env: Env,
+  parameters: List(glance.FnParameter),
+  body: List(Statement),
+) -> Env {
+  bind_names(
+    env,
+    list.map(parameters, fn(p) { p.name }),
+    closure_site(body),
+    BoundParam,
+  )
 }
 
 // Walk a sequence of statements threading the binding env forward so
@@ -1384,16 +1513,23 @@ fn walk_scope_with_env(
 // `callee(args, fn(p1, p2) { rest })` — Gleam's own desugaring. Reusing the
 // normal call walk binds an operator callee's callback to the continuation
 // closure, while the continuation's effects are still extracted from the
-// closure body (so a non-operator callee doesn't drop them).
+// closure body (so a non-operator callee doesn't drop them). A destructuring
+// pattern takes a parameter no Gleam identifier can spell and is matched
+// against it by a `let` opening the body, so every name it binds covers the
+// spelling in `rest`.
 fn desugar_use(
   location: glance.Span,
   patterns: List(glance.UsePattern),
   function: Expression,
   rest: List(Statement),
 ) -> Expression {
-  let params = list.map(patterns, use_pattern_to_fn_param)
+  let #(params, matches) =
+    patterns
+    |> list.index_map(use_pattern_to_fn_param)
+    |> list.unzip
+  let body = list.append(option.values(matches), rest)
   let closure =
-    glance.Fn(location:, arguments: params, return_annotation: None, body: rest)
+    glance.Fn(location:, arguments: params, return_annotation: None, body:)
   let closure_arg = glance.UnlabelledField(closure)
   case function {
     glance.Call(location: call_location, function: callee, arguments: args) ->
@@ -1403,14 +1539,36 @@ fn desugar_use(
 }
 
 // Turn a `use` pattern into the synthetic closure's parameter. A simple
-// variable binds by name; a destructuring pattern can't be a bare parameter,
-// so it's discarded (its names stay unbound — the conservative behaviour).
-fn use_pattern_to_fn_param(pattern: glance.UsePattern) -> glance.FnParameter {
-  let name = case pattern.pattern {
-    glance.PatternVariable(name:, ..) -> glance.Named(name)
-    _ -> glance.Discarded("use")
+// variable binds by name and a discard discards; any other pattern takes the
+// parameter `$use<index>` and the `let` that matches the pattern against it.
+fn use_pattern_to_fn_param(
+  pattern: glance.UsePattern,
+  index: Int,
+) -> #(glance.FnParameter, Option(Statement)) {
+  case pattern.pattern {
+    glance.PatternVariable(name:, ..) -> #(
+      glance.FnParameter(name: glance.Named(name), type_: None),
+      None,
+    )
+    glance.PatternDiscard(name:, ..) -> #(
+      glance.FnParameter(name: glance.Discarded(name), type_: None),
+      None,
+    )
+    destructuring -> {
+      let name = "$use" <> int.to_string(index)
+      let location = destructuring.location
+      #(
+        glance.FnParameter(name: glance.Named(name), type_: None),
+        Some(glance.Assignment(
+          location:,
+          kind: glance.Let,
+          pattern: destructuring,
+          annotation: None,
+          value: glance.Variable(location:, name:),
+        )),
+      )
+    }
   }
-  glance.FnParameter(name:, type_: None)
 }
 
 // Call resolution
@@ -1441,7 +1599,7 @@ fn resolve_variable_call(
     // import of the same name.
     BoundLocal ->
       ExtractResult(..empty(), local: [
-        LocalCall(name, span, types.LexicalBinding),
+        LocalCall(name, span, local_scope(name, env)),
       ])
     // A let-bound returned operator applied directly: `let h = pick(); h(cb)`.
     // Emit a direct-operator call so the checker resolves the producer's
@@ -1469,23 +1627,33 @@ fn resolve_variable_call(
     // shadows an unqualified import of the same name, rather than the call-site
     // name resolving to the import. A multi-segment receiver path can't name a
     // callable, so it stays a local call the checker leaves `[Unknown]`.
-    BoundReceiverPath(path) ->
+    BoundReceiverPath(path:, root:) ->
       ExtractResult(..empty(), local: [
-        LocalCall(path, span, types.LexicalBinding),
+        LocalCall(path, span, types.LexicalBinding(root)),
       ])
-    _ -> resolve_unqualified_call(name, span, context, env)
+    BoundConstructor(..)
+    | BoundUpdated(..)
+    | BoundComposite(..)
+    | BoundOpaque -> resolve_unqualified_call(name, span, context, env)
   }
 }
 
+// A call to a name the walk traced nothing for: a binding that covers it is
+// what it calls, an unqualified import only where none does, and the module's
+// own definitions where neither does.
 fn resolve_unqualified_call(
   name: String,
   span: glance.Span,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
-  case is_constructor_name(name) {
-    True -> empty()
-    False ->
+  case is_constructor_name(name), env_binder(env, name) {
+    True, _ -> empty()
+    False, Ok(binder) ->
+      ExtractResult(..empty(), local: [
+        LocalCall(name, span, types.LexicalBinding(binder)),
+      ])
+    False, Error(Nil) ->
       case dict.get(context.unqualified, name) {
         Ok(qualified_name) ->
           ExtractResult(..empty(), resolved: [
@@ -1493,7 +1661,7 @@ fn resolve_unqualified_call(
           ])
         Error(Nil) ->
           ExtractResult(..empty(), local: [
-            LocalCall(name, span, local_scope(name, env)),
+            LocalCall(name, span, types.ModuleDefinition),
           ])
       }
   }
@@ -1547,10 +1715,12 @@ fn qualified_call_lookup(
         Ok(binding) ->
           case shadowed_receiver_has_field(binding, site.label) {
             False -> module_call(site, module_path)
-            True -> env_field_call(binding, site, env, Some(module_path))
+            True ->
+              env_field_call(binding, site, context, env, Some(module_path))
           }
       }
-    Error(Nil) -> env_field_call(resolve_env(site.object, env), site, env, None)
+    Error(Nil) ->
+      env_field_call(resolve_env(site.object, env), site, context, env, None)
   }
 }
 
@@ -1606,6 +1776,7 @@ fn shadowed_receiver_has_field(binding: LocalBinding, label: String) -> Bool {
 fn env_field_call(
   binding: LocalBinding,
   site: CallSite,
+  context: ImportContext,
   env: Env,
   shadowed_module: Option(String),
 ) -> ExtractResult {
@@ -1653,7 +1824,8 @@ fn env_field_call(
     | BoundParam
     | BoundLocal
     | BoundComposite(..)
-    | BoundOpaque -> field_call(field_receiver_provenance(site.object, env))
+    | BoundOpaque ->
+      field_call(field_receiver_provenance(site.object, context, env))
   }
 }
 
@@ -1662,10 +1834,11 @@ fn env_field_call(
 // `ParameterRoot`; anything shadowed, computed, or opaque is `Untraceable`.
 fn field_receiver_provenance(
   alias: String,
+  context: ImportContext,
   env: Env,
 ) -> types.FieldCallProvenance {
-  case param_rooted_path(alias, env) {
-    Some(canonical) -> ParameterRoot(canonical)
+  case param_rooted_path(alias, context, env) {
+    Some(#(canonical, _root)) -> ParameterRoot(canonical)
     None -> Untraceable
   }
 }
@@ -1678,17 +1851,30 @@ fn field_receiver_provenance(
 // this total — no recursion, so a self-referential rebind (`let options =
 // options.inner`) can't loop — and correct under shadowing, since the alias's
 // canonical form was fixed when it was created, not re-derived from names that a
-// later `let` may have rebound.
-fn param_rooted_path(path: String, env: Env) -> Option(String) {
+// later `let` may have rebound. Paired with the binder of the parameter the
+// path starts at, which is a top-level function's own: a closure's parameter
+// roots no path, since nothing that calls the function binds it.
+fn param_rooted_path(
+  path: String,
+  context: ImportContext,
+  env: Env,
+) -> Option(#(String, Int)) {
   let #(root, rest) = split_root(path)
-  case resolve_env(root, env) {
-    BoundLocal -> Some(path)
-    BoundReceiverPath(canonical) ->
-      Some(case rest {
-        Some(tail) -> canonical <> "." <> tail
-        None -> canonical
-      })
-    _ -> None
+  case resolve_env(root, env), env_binder(env, root) {
+    BoundLocal, Ok(binder) ->
+      case set.contains(context.function_sites, binder) {
+        True -> Some(#(path, binder))
+        False -> None
+      }
+    BoundReceiverPath(path: canonical, root: binder), _ ->
+      Some(#(
+        case rest {
+          Some(tail) -> canonical <> "." <> tail
+          None -> canonical
+        },
+        binder,
+      ))
+    _, _ -> None
   }
 }
 
@@ -1698,9 +1884,13 @@ fn param_rooted_path(path: String, env: Env) -> Option(String) {
 // an existing alias resolves to (`let saved = options; let options = other`
 // leaves `saved` pointing at the original `options`). A path not rooted at a live
 // parameter is opaque.
-fn bind_receiver_path(path: String, env: Env) -> LocalBinding {
-  case param_rooted_path(path, env) {
-    Some(canonical) -> BoundReceiverPath(canonical)
+fn bind_receiver_path(
+  path: String,
+  context: ImportContext,
+  env: Env,
+) -> LocalBinding {
+  case param_rooted_path(path, context, env) {
+    Some(#(canonical, root)) -> BoundReceiverPath(canonical, root)
     None -> BoundOpaque
   }
 }
@@ -1744,10 +1934,12 @@ fn resolve_constructor_field_call(
         resolved: [ResolvedCall(qualified, site.call_span)],
         ambiguous: observed(site, AsWired(types.WiredFunction(qualified))),
       )
-    Ok(LocalRef(name: local_name)) ->
+    // The call reads the binder the field's value named where the record was
+    // built, never what the name means where the field is called.
+    Ok(LocalRef(name: local_name, scope:)) ->
       ExtractResult(
         ..empty(),
-        local: [LocalCall(local_name, site.call_span, types.LexicalBinding)],
+        local: [LocalCall(local_name, site.call_span, scope)],
         ambiguous: observed(site, AsWired(types.WiredLocal(local_name))),
       )
     Ok(ConstructorRef) ->
@@ -1837,7 +2029,7 @@ fn resolve_nested_field_call(
                 site.call_span,
                 site.receiver_span,
                 site.access_span,
-                field_receiver_provenance(site.object, env),
+                field_receiver_provenance(site.object, context, env),
                 // A nested receiver is not a bare identifier, so it shadows
                 // nothing.
                 None,
@@ -1947,14 +2139,14 @@ fn bind_assignment(
   env: Env,
 ) -> Env {
   case pattern {
-    glance.PatternVariable(name:, ..) ->
-      env_bind(env, name, classify_rhs(value, context, env))
+    glance.PatternVariable(location:, name:) ->
+      env_bind(env, name, location.start, classify_rhs(value, context, env))
     _ -> fold_pattern_names(pattern, env, bind_opaque)
   }
 }
 
-fn bind_opaque(env: Env, name: String) -> Env {
-  env_bind(env, name, BoundOpaque)
+fn bind_opaque(env: Env, name: String, binder: Int) -> Env {
+  env_bind(env, name, binder, BoundOpaque)
 }
 
 // Classify the right-hand side of a `let name = rhs`. Unrecognised
@@ -2188,13 +2380,13 @@ fn classify_rhs_ref(
 ) -> LocalBinding {
   case classify_expression(expression, context, env) {
     FunctionRef(name:) -> BoundFunctionRef(name:)
-    LocalRef(name:) ->
+    LocalRef(name:, ..) ->
       case env_get(env, name) {
         // Aliasing a top-level parameter (`let forwarded = options`): capture the
         // canonical parameter path so a forwarded field var re-keys onto it at
         // the use site rather than onto the dead alias name. Any other binding is
         // copied as-is (eager alias resolution).
-        Ok(BoundLocal) -> bind_receiver_path(name, env)
+        Ok(BoundLocal) -> bind_receiver_path(name, context, env)
         Ok(binding) -> binding
         Error(Nil) -> BoundOpaque
       }
@@ -2219,7 +2411,7 @@ fn classify_rhs_ref(
     // A receiver-path alias (`let options = config.options`): capture the
     // canonical path so a forwarded field var re-keys onto `config.options`
     // (fixed now, immune to later rebinds), not the opaque alias.
-    types.ReceiverPath(path:, ..) -> bind_receiver_path(path, env)
+    types.ReceiverPath(path:, ..) -> bind_receiver_path(path, context, env)
     ConstructorRef | OtherExpression | types.Capture(..) -> BoundOpaque
   }
 }
@@ -2354,9 +2546,9 @@ fn resolve_env(name: String, env: Env) -> LocalBinding {
 // definitions where none does. A top-level function is never in the env, so a
 // name the env holds is the binding and nothing else.
 fn local_scope(name: String, env: Env) -> types.LocalScope {
-  case env_has(env, name) {
-    True -> types.LexicalBinding
-    False -> types.ModuleDefinition
+  case env_binder(env, name) {
+    Ok(binder) -> types.LexicalBinding(binder)
+    Error(Nil) -> types.ModuleDefinition
   }
 }
 
@@ -2368,18 +2560,18 @@ fn bind_use_patterns(patterns: List(glance.UsePattern), env: Env) -> Env {
   })
 }
 
-// Walk a pattern and fold over every variable name it binds into
-// scope, avoiding the intermediate `List(String)` a collect-then-fold
-// would allocate.
+// Walk a pattern and fold over every variable name it binds into scope, with
+// the offset of the pattern that binds it, avoiding the intermediate list a
+// collect-then-fold would allocate.
 fn fold_pattern_names(
   pattern: glance.Pattern,
   acc: a,
-  step: fn(a, String) -> a,
+  step: fn(a, String, Int) -> a,
 ) -> a {
   case pattern {
-    glance.PatternVariable(name:, ..) -> step(acc, name)
-    glance.PatternAssignment(pattern: inner, name:, ..) ->
-      fold_pattern_names(inner, step(acc, name), step)
+    glance.PatternVariable(location:, name:) -> step(acc, name, location.start)
+    glance.PatternAssignment(location:, pattern: inner, name:) ->
+      fold_pattern_names(inner, step(acc, name, location.start), step)
     glance.PatternTuple(elements:, ..) ->
       list.fold(elements, acc, fn(inner, p) {
         fold_pattern_names(p, inner, step)
@@ -2399,17 +2591,18 @@ fn fold_pattern_names(
         case field {
           glance.LabelledField(item:, ..) ->
             fold_pattern_names(item, inner, step)
-          glance.ShorthandField(label:, ..) -> step(inner, label)
+          glance.ShorthandField(label:, location:) ->
+            step(inner, label, location.start)
           glance.UnlabelledField(item:) -> fold_pattern_names(item, inner, step)
         }
       })
-    glance.PatternConcatenate(prefix_name:, rest_name:, ..) -> {
+    glance.PatternConcatenate(location:, prefix_name:, rest_name:, ..) -> {
       let with_prefix = case prefix_name {
-        Some(glance.Named(n)) -> step(acc, n)
+        Some(glance.Named(n)) -> step(acc, n, location.start)
         _ -> acc
       }
       case rest_name {
-        glance.Named(n) -> step(with_prefix, n)
+        glance.Named(n) -> step(with_prefix, n, location.start)
         glance.Discarded(_) -> with_prefix
       }
     }
@@ -2554,7 +2747,11 @@ fn extract_from_expression(
     // own parameters are bound (as `BoundParam`) so calls to them aren't
     // mistaken for unresolved local calls.
     glance.Fn(arguments:, body: statements, ..) ->
-      walk_scope(statements, context, bind_closure_params(env, arguments))
+      walk_scope(
+        statements,
+        context,
+        bind_closure_params(env, arguments, statements),
+      )
 
     // Block
     glance.Block(statements:, ..) -> walk_scope(statements, context, env)
@@ -3027,12 +3224,10 @@ fn extract_expression_call(
         span,
         call_args,
       )
-    LocalRef(name:) ->
+    LocalRef(name:, scope:) ->
       merge_with_args(
         base,
-        ExtractResult(..empty(), local: [
-          LocalCall(name, span, local_scope(name, env)),
-        ]),
+        ExtractResult(..empty(), local: [LocalCall(name, span, scope)]),
         span,
         call_args,
       )
@@ -3058,18 +3253,24 @@ fn extract_from_clause(
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
-  let clause_env =
-    list.fold(clause.patterns, env, fn(acc, alternative) {
-      list.fold(alternative, acc, fn(inner, pattern) {
-        fold_pattern_names(pattern, inner, bind_opaque)
-      })
-    })
+  let clause_env = clause_scope(clause, env)
   let body_result = extract_from_expression(clause.body, context, clause_env)
   case clause.guard {
     Some(guard) ->
       merge(body_result, extract_from_expression(guard, context, clause_env))
     None -> body_result
   }
+}
+
+// The scope a clause's guard and body are read in: `env` with every name its
+// patterns bind, each opaque at its own pattern. Alternatives bind the same
+// names; the last one's binder stands for them all.
+fn clause_scope(clause: Clause, env: Env) -> Env {
+  list.fold(clause.patterns, env, fn(acc, alternative) {
+    list.fold(alternative, acc, fn(inner, pattern) {
+      fold_pattern_names(pattern, inner, bind_opaque)
+    })
+  })
 }
 
 // Calling a `case` of functions
@@ -3092,7 +3293,7 @@ type ClosureCallSite {
 fn option_calls(options: List(ArgumentValue), env: Env) -> List(OptionCall) {
   list.flat_map(options, fn(option) {
     case option {
-      LocalRef(name:) -> [local_option(name, env)]
+      LocalRef(name:, scope:) -> [local_option(name, scope, env)]
       FunctionRef(name:) -> [FunctionOption(name)]
       types.ReturnedOperator(callee, args) | types.CallResult(callee, args) -> [
         ProducerOption(callee, args),
@@ -3143,23 +3344,17 @@ fn call_key(call: OptionCall) -> Result(List(KeyPart), Nil) {
   }
 }
 
-// A bare name in a branch: a caller parameter, a closure's own parameter, or a
-// name no binding covers. A name bound to anything else no longer names what
-// the branch named, so no call path reads it.
-fn local_option(name: String, env: Env) -> OptionCall {
-  case env_get(env, name) {
-    Ok(BoundLocal) -> LocalOption(name, types.LexicalBinding)
-    Ok(BoundParam) -> SilentOption
-    Error(Nil) -> LocalOption(name, types.ModuleDefinition)
-    Ok(BoundFunctionRef(..))
-    | Ok(BoundConstructor(..))
-    | Ok(BoundReceiverPath(..))
-    | Ok(BoundClosure(..))
-    | Ok(BoundChoice(..))
-    | Ok(BoundReturnedOperator(..))
-    | Ok(BoundUpdated(..))
-    | Ok(BoundComposite(..))
-    | Ok(BoundOpaque) -> UnknownOption
+// A bare name in a branch, read as the branch named it: a parameter by its
+// binder, a closure's own parameter called where the closure is walked inline
+// silently (its application accounts for it), a name no binding covered by the
+// module's own definitions.
+fn local_option(name: String, scope: types.LocalScope, env: Env) -> OptionCall {
+  case scope, env_get(env, name), env_binder(env, name) {
+    types.LexicalBinding(binder:), Ok(BoundParam), Ok(current)
+      if current == binder
+    -> SilentOption
+    types.LexicalBinding(..), _, _ | types.ModuleDefinition, _, _ ->
+      LocalOption(name, scope)
   }
 }
 
@@ -3199,7 +3394,7 @@ fn called_option(
 // parameters, one called in place is lifted whole and applied.
 fn closure_call(
   params: List(String),
-  captures: List(#(String, ArgumentValue)),
+  captures: List(types.Captured),
   body: List(glance.Statement),
   span: glance.Span,
   site: ClosureCallSite,
@@ -3281,20 +3476,22 @@ fn classify_variable(
   env: Env,
 ) -> types.ArgumentValue {
   use <- bool.guard(when: is_constructor_name(name), return: ConstructorRef)
-  case env_get(env, name) {
-    Ok(binding) -> classify_local_binding(binding, name)
-    Error(Nil) ->
+  case env_get(env, name), env_binder(env, name) {
+    Ok(binding), Ok(binder) -> classify_local_binding(binding, name, binder)
+    _, _ ->
       case dict.get(context.unqualified, name) {
         Ok(qualified_name) -> FunctionRef(name: qualified_name)
-        Error(Nil) -> LocalRef(name:)
+        Error(Nil) -> LocalRef(name:, scope: types.ModuleDefinition)
       }
   }
 }
 
-// Map a lexical binding to the argument value a bare reference to it denotes.
+// Map a lexical binding to the argument value a bare reference to it denotes,
+// `binder` the offset of the binding.
 fn classify_local_binding(
   binding: LocalBinding,
   name: String,
+  binder: Int,
 ) -> types.ArgumentValue {
   case binding {
     BoundFunctionRef(name: qualified) -> FunctionRef(name: qualified)
@@ -3322,10 +3519,12 @@ fn classify_local_binding(
     // A receiver-path or parameter alias resolves to its path, so a forwarded
     // field var re-keys onto the caller's receiver (`let o = config.options;
     // inner(o)` re-keys `o.resolver` onto `config.options.resolver`).
-    BoundReceiverPath(path) -> types.ReceiverPath(path, None)
-    // A parameter: a bare local reference, resolved against the caller's param
-    // bounds at the use site.
-    BoundLocal | BoundParam -> LocalRef(name:)
+    BoundReceiverPath(path:, root:) ->
+      types.ReceiverPath(path, types.LexicalBinding(root), None)
+    // A parameter: a bare local reference to its binder, resolved against the
+    // bound kept for that binder at the use site.
+    BoundLocal | BoundParam ->
+      LocalRef(name:, scope: types.LexicalBinding(binder))
     // An opaque value — a destructured, computed, or shadowed local. It is *not*
     // a bare `LocalRef`: a top-level function is never bound in the env, so a
     // `LocalRef` resolved by name would let an opaque local that happens to
@@ -3344,7 +3543,7 @@ fn classify_local_binding(
 // untraceable.
 fn field_value(value: ArgumentValue, env: Env) -> ArgumentValue {
   case value {
-    LocalRef(name:) ->
+    LocalRef(name:, ..) ->
       case env_get(env, name) {
         Ok(BoundParam) -> OtherExpression
         Ok(BoundFunctionRef(..))
@@ -3396,13 +3595,10 @@ fn classify_expression(
       label: function_name,
       ..,
     ) ->
-      case
-        is_constructor_name(function_name),
-        context.lat_mode == types.Active && env_has(env, alias)
-      {
+      case is_constructor_name(function_name), env_has(env, alias) {
         True, _ -> ConstructorRef
-        // Under the latent-effect rules a binding in scope shadows the module
-        // alias it shares a name with, as the compiler reads it.
+        // A binding in scope shadows the module alias it shares a name with,
+        // as the compiler reads it.
         False, True -> receiver_path_value(expression, env)
         False, False ->
           case dict.get(context.aliases, alias) {
@@ -3417,9 +3613,9 @@ fn classify_expression(
     glance.Variable(_, name) -> classify_variable(name, context, env)
     // An inline closure argument: capture its parameter names and body so the
     // checker can lift it to an effect operator when it's passed to an operator
-    // parameter. The callable bindings in scope are captured too, so re-analysing
-    // the body resolves a captured name (`let suffix = string.append`) to its
-    // effect rather than `[Unknown]`.
+    // parameter. The bindings its body names are captured too, as they stand
+    // here, so re-analysing the body resolves a captured name (`let suffix =
+    // string.append`) to what it denotes here rather than `[Unknown]`.
     glance.Fn(arguments:, body:, ..) -> {
       let params =
         list.map(arguments, fn(parameter) {
@@ -3428,38 +3624,40 @@ fn classify_expression(
             glance.Discarded(_) -> "_"
           }
         })
-      types.Closure(params, callable_captures(env, params), body)
+      types.Closure(
+        params,
+        captured_bindings(env, spelled_names(body), params),
+        body,
+      )
     }
-    // A function capture `f(a, _, c)`: its target and the arguments it fixes,
-    // read only under the latent-effect rules.
+    // A function capture `f(a, _, c)`: its target and the arguments it fixes.
     glance.FnCapture(
       location:,
       label:,
       function:,
       arguments_before:,
       arguments_after:,
-    ) ->
-      case context.lat_mode {
-        types.Active -> {
-          let hole = list.length(arguments_before)
-          types.Capture(
-            span: location,
-            target: capture_target(function, context, env),
-            hole:,
-            label:,
-            arguments: list.append(
-              classify_arguments(arguments_before, context, env, 0),
-              classify_arguments(arguments_after, context, env, hole + 1),
-            ),
-            evaluated: fixed_expressions(list.append(
-              arguments_before,
-              arguments_after,
-            )),
-            captures: callable_captures(env, []),
-          )
-        }
-        types.Inactive -> OtherExpression
-      }
+    ) -> {
+      let hole = list.length(arguments_before)
+      let fixed =
+        fixed_expressions(list.append(arguments_before, arguments_after))
+      types.Capture(
+        span: location,
+        target: capture_target(function, context, env),
+        hole:,
+        label:,
+        arguments: list.append(
+          classify_arguments(arguments_before, context, env, 0),
+          classify_arguments(arguments_after, context, env, hole + 1),
+        ),
+        evaluated: fixed,
+        captures: captured_bindings(
+          env,
+          list.fold(fixed, set.new(), spelled_in),
+          [],
+        ),
+      )
+    }
     // A `case`/`if` whose every clause body is a bare function-like value is a
     // selection among known operators: capture them as a `Choice` so the checker
     // can lift and join them. Any non-function (or block) clause body, or no
@@ -3958,7 +4156,12 @@ fn receiver_path_value(
   env: Env,
 ) -> types.ArgumentValue {
   case receiver_path(expression) {
-    Some(path) -> types.ReceiverPath(path, traced_field(path, env))
+    Some(path) ->
+      types.ReceiverPath(
+        path,
+        local_scope(split_root(path).0, env),
+        traced_field(path, env),
+      )
     None -> OtherExpression
   }
 }
@@ -4021,9 +4224,12 @@ fn classify_call_producer(
   let args = classify_arguments(arguments, context, env, 0)
   case classify_expression(function, context, env) {
     FunctionRef(name: callee) -> types.CallResult(callee, args)
-    // Same-module bare name: `""` module is the resolved-on-demand sentinel.
-    LocalRef(name:) -> types.CallResult(QualifiedName("", name), args)
-    ConstructorRef
+    // A name no binding covers: `""` module is the resolved-on-demand sentinel
+    // for the module's own function.
+    LocalRef(name:, scope: types.ModuleDefinition) ->
+      types.CallResult(QualifiedName("", name), args)
+    LocalRef(scope: types.LexicalBinding(..), ..)
+    | ConstructorRef
     | types.Closure(..)
     | types.Choice(..)
     | types.ReturnedOperator(..)
@@ -4049,15 +4255,17 @@ fn classify_case_options(
   // binding covers: two branches naming one binding denote one value.
   let named =
     list.map(clauses, fn(clause) {
-      let name = case clause.body {
+      let scope = clause_scope(clause, env)
+      // A name beside its binder: a function's parameters share one binder,
+      // and distinct bindings of one name never do.
+      let binder = case clause.body {
         glance.Variable(name:, ..) ->
-          case env_get(env, name) {
-            Ok(_) -> Some(name)
-            Error(Nil) -> None
-          }
+          env_binder(scope, name)
+          |> result.map(fn(binder) { #(name, binder) })
+          |> option.from_result
         _ -> None
       }
-      #(name, classify_expression(clause.body, context, env))
+      #(binder, classify_expression(clause.body, context, scope))
     })
   let options = list.map(named, fn(option) { option.1 })
   // `LocalRef` is admitted: a same-module function resolves via the function
@@ -4099,20 +4307,20 @@ const choice_budget = 1000
 // `choice_budget` distinct ones makes the rest one untraceable value; one
 // already kept is just kept.
 fn alternatives(
-  options: List(#(Option(String), ArgumentValue)),
+  options: List(#(Option(#(String, Int)), ArgumentValue)),
 ) -> List(ArgumentValue) {
-  let #(#(kept, _seen, _count), _names) =
+  let #(#(kept, _seen, _count), _binders) =
     list.fold(options, #(#([], set.new(), 0), set.new()), fn(acc, entry) {
-      let #(acc, names) = acc
+      let #(acc, binders) = acc
       case entry {
         // A branch naming a binding an earlier branch named adds nothing,
         // however long the value's written key runs.
-        #(Some(name), option) ->
-          case set.contains(names, name) {
-            True -> #(acc, names)
-            False -> #(keep_branch(acc, option), set.insert(names, name))
+        #(Some(binder), option) ->
+          case set.contains(binders, binder) {
+            True -> #(acc, binders)
+            False -> #(keep_branch(acc, option), set.insert(binders, binder))
           }
-        #(None, option) -> #(keep_branch(acc, option), names)
+        #(None, option) -> #(keep_branch(acc, option), binders)
       }
     })
   list.reverse(kept)
@@ -4216,10 +4424,11 @@ fn value_parts(
   case value {
     FunctionRef(name:) ->
       emit_all(acc, [Tag(0), Name(name.module), Name(name.function)])
-    LocalRef(name:) -> emit_all(acc, [Tag(1), Name(name)])
+    LocalRef(name:, scope:) ->
+      emit_all(acc, [Tag(1), Name(name), scope_part(scope)])
     ConstructorRef -> emit(acc, Tag(2))
     types.Closure(params:, captures:, body:) -> {
-      use acc <- result.try(emit_all(acc, [Tag(3), Offset(body_start(body))]))
+      use acc <- result.try(emit_all(acc, [Tag(3), Offset(closure_site(body))]))
       use acc <- result.try(
         each_parts(acc, params, fn(acc, param) { emit(acc, Name(param)) }),
       )
@@ -4255,8 +4464,10 @@ fn value_parts(
       )
       each_parts(acc, args, argument_parts)
     }
-    types.ReceiverPath(path:, wired:) -> {
-      use acc <- result.try(emit_all(acc, [Tag(8), Name(path)]))
+    types.ReceiverPath(path:, root:, wired:) -> {
+      use acc <- result.try(
+        emit_all(acc, [Tag(8), Name(path), scope_part(root)]),
+      )
       case wired {
         Some(wired) -> {
           use acc <- result.try(emit(acc, Tag(1)))
@@ -4294,19 +4505,8 @@ fn value_parts(
 
 fn scope_part(scope: types.LocalScope) -> KeyPart {
   case scope {
-    types.LexicalBinding -> Tag(-2)
+    types.LexicalBinding(binder:) -> Offset(binder)
     types.ModuleDefinition -> Tag(-1)
-  }
-}
-
-// Where a closure's body starts, or -1 for an empty body.
-fn body_start(body: List(glance.Statement)) -> Int {
-  case body {
-    [glance.Use(location:, ..), ..]
-    | [glance.Assignment(location:, ..), ..]
-    | [glance.Assert(location:, ..), ..] -> location.start
-    [glance.Expression(expression), ..] -> expression.location.start
-    [] -> -1
   }
 }
 
@@ -4319,10 +4519,12 @@ fn label_part(label: Option(String)) -> KeyPart {
 
 fn captured_parts(
   acc: #(List(KeyPart), Int),
-  captured: #(String, ArgumentValue),
+  captured: types.Captured,
 ) -> Result(#(List(KeyPart), Int), Nil) {
-  use acc <- result.try(emit(acc, Name(captured.0)))
-  value_parts(acc, captured.1)
+  use acc <- result.try(
+    emit_all(acc, [Name(captured.name), Offset(captured.binder)]),
+  )
+  value_parts(acc, captured.value)
 }
 
 fn argument_parts(
@@ -4437,7 +4639,7 @@ fn classify_return_tail(
     glance.Case(clauses:, ..) ->
       types.Choice(
         list.map(clauses, fn(clause) {
-          classify_return_tail(clause.body, context, env)
+          classify_return_tail(clause.body, context, clause_scope(clause, env))
         }),
       )
     _ -> classify_expression(tail, context, env)
@@ -4460,7 +4662,7 @@ type ModuleScope {
 // is traceable; every other shape is `Opaque`.
 fn provenance_of_value(
   value: ArgumentValue,
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
   scope: ModuleScope,
 ) -> types.ReturnProvenance {
   case value {
@@ -4494,7 +4696,7 @@ fn provenance_of_value(
 // any branch that is untraceable (`Opaque`), makes the whole join `Opaque`.
 fn join_provenance(
   options: List(ArgumentValue),
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
   scope: ModuleScope,
 ) -> types.ReturnProvenance {
   let branches = list.map(options, provenance_of_value(_, positions, scope))
@@ -4526,7 +4728,7 @@ fn contains_self_call(value: ArgumentValue, self_name: String) -> Bool {
 fn recursive_provenance(
   value: ArgumentValue,
   self_name: String,
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
   scope: ModuleScope,
 ) -> types.ReturnProvenance {
   recursion_fixpoint(value, self_name, positions, scope, None, recursion_fuel)
@@ -4538,7 +4740,7 @@ fn recursive_provenance(
 fn recursion_fixpoint(
   value: ArgumentValue,
   self_name: String,
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
   scope: ModuleScope,
   current: Option(types.ReturnProvenance),
   fuel: Int,
@@ -4563,7 +4765,7 @@ fn recursion_fixpoint(
 fn eval_recursive(
   value: ArgumentValue,
   self_name: String,
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
   scope: ModuleScope,
   current: Option(types.ReturnProvenance),
 ) -> Option(types.ReturnProvenance) {
@@ -4595,7 +4797,7 @@ fn eval_recursive(
 fn ground_recursive(
   provenance: types.ReturnProvenance,
   args: List(CallArgument),
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
   scope: ModuleScope,
 ) -> types.ReturnProvenance {
   case provenance {
@@ -4664,9 +4866,10 @@ fn arg_value_at_position(
 // receiver path onto the argument. Any non-path value can't be extended.
 fn extend_path(value: ArgumentValue, tail: String) -> ArgumentValue {
   case value {
-    LocalRef(name) -> types.ReceiverPath(name <> "." <> tail, None)
-    types.ReceiverPath(path:, ..) ->
-      types.ReceiverPath(path <> "." <> tail, None)
+    LocalRef(name:, scope:) ->
+      types.ReceiverPath(name <> "." <> tail, scope, None)
+    types.ReceiverPath(path:, root:, ..) ->
+      types.ReceiverPath(path <> "." <> tail, root, None)
     _ -> OtherExpression
   }
 }
@@ -4677,18 +4880,20 @@ fn extend_path(value: ArgumentValue, tail: String) -> ArgumentValue {
 // parameter.
 fn param_rooted(
   value: ArgumentValue,
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
 ) -> Result(#(Int, Option(String)), Nil) {
   case value {
-    LocalRef(name) ->
-      dict.get(positions, name)
+    LocalRef(name:, scope: types.LexicalBinding(binder:)) ->
+      dict.get(positions, #(name, binder))
       |> result.map(fn(position) { #(position, None) })
-    types.ReceiverPath(path:, ..) -> {
+    types.ReceiverPath(path:, root: types.LexicalBinding(binder:), ..) -> {
       let #(root, tail) = split_root(path)
-      dict.get(positions, root)
+      dict.get(positions, #(root, binder))
       |> result.map(fn(position) { #(position, tail) })
     }
-    FunctionRef(..)
+    LocalRef(scope: types.ModuleDefinition, ..)
+    | types.ReceiverPath(root: types.ModuleDefinition, ..)
+    | FunctionRef(..)
     | ConstructorRef
     | types.Closure(..)
     | types.Choice(..)
@@ -4711,7 +4916,7 @@ fn param_rooted(
 // whole summary is `Opaque` only when no field is parameter-rooted.
 fn build_provenance(
   fields: Dict(String, ArgumentValue),
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
   scope: ModuleScope,
 ) -> types.ReturnProvenance {
   let built =
@@ -4734,7 +4939,7 @@ fn build_provenance(
 // returned record resolves it per receiver; anything else is `FieldOpaque`.
 fn field_provenance_of_value(
   value: ArgumentValue,
-  positions: Dict(String, Int),
+  positions: Dict(#(String, Int), Int),
   scope: ModuleScope,
 ) -> types.FieldProvenance {
   case param_rooted(value, positions) {
@@ -4752,12 +4957,13 @@ fn field_provenance_of_value(
         // opaque local of the same shape stays `FieldOpaque`. The name is
         // qualified with the defining module so a consumer reading this summary
         // resolves the producer's function, not a same-named one of its own.
-        LocalRef(name) ->
+        LocalRef(name:, scope: types.ModuleDefinition) ->
           case set.contains(scope.functions, name) {
             True ->
               types.FieldValue(qualified_field_function(scope.module, name))
             False -> types.FieldOpaque
           }
+        LocalRef(scope: types.LexicalBinding(..), ..) -> types.FieldOpaque
         ConstructorRef
         | types.Choice(..)
         | types.ReceiverPath(..)
@@ -4775,8 +4981,123 @@ fn field_provenance_of_value(
 // with, so the bare reference is kept and resolves module-locally as before.
 fn qualified_field_function(module: String, name: String) -> ArgumentValue {
   case module {
-    "" -> LocalRef(name)
+    "" -> LocalRef(name, types.ModuleDefinition)
     _ -> FunctionRef(types.QualifiedName(module:, function: name))
+  }
+}
+
+// Summaries other modules read
+
+// How many values one exported field value keeps before what is left is
+// opaque.
+const export_budget = 1000
+
+// A provenance as another module reads it. Every value it keeps holds only
+// what that module can resolve without this one's scope: a name no binding
+// covered is this module's function, qualified; a binding's name, a closure or
+// capture body, a receiver path, a literal and an update are opaque; a
+// construction keeps its field wiring but not its components, whose spans are
+// this module's; a call keeps its callee, qualified, and its arguments' values
+// at a span no expression is written at.
+pub fn exported_provenance(
+  provenance: types.ReturnProvenance,
+  context: ImportContext,
+) -> types.ReturnProvenance {
+  let scope =
+    ModuleScope(module: context.module_path, functions: context.functions)
+  case provenance {
+    types.Build(fields) ->
+      types.Build(
+        dict.map_values(fields, fn(_label, field) {
+          case field {
+            types.FieldValue(value) ->
+              types.FieldValue(exported_value(value, scope, export_budget).0)
+            types.FieldParam(..) | types.FieldPath(..) | types.FieldOpaque ->
+              field
+          }
+        }),
+      )
+    types.Join(branches) ->
+      types.Join(list.map(branches, exported_provenance(_, context)))
+    types.Passthrough(..) | types.Path(..) | types.Opaque -> provenance
+  }
+}
+
+// `value` as another module reads it, and the budget left after it. A value
+// past the budget is opaque.
+fn exported_value(
+  value: ArgumentValue,
+  scope: ModuleScope,
+  budget: Int,
+) -> #(ArgumentValue, Int) {
+  use <- bool.guard(when: budget <= 0, return: #(OtherExpression, budget))
+  let budget = budget - 1
+  case value {
+    FunctionRef(..) | ConstructorRef | OtherExpression -> #(value, budget)
+    LocalRef(name:, scope: types.ModuleDefinition) ->
+      case set.contains(scope.functions, name) {
+        True -> #(qualified_field_function(scope.module, name), budget)
+        False -> #(OtherExpression, budget)
+      }
+    LocalRef(scope: types.LexicalBinding(..), ..)
+    | types.Closure(..)
+    | types.Capture(..)
+    | types.ReceiverPath(wired: None, ..)
+    | types.Updated(..)
+    | types.Composite(..) -> #(OtherExpression, budget)
+    types.ReceiverPath(wired: Some(traced), ..) ->
+      exported_value(traced, scope, budget)
+    types.Choice(options) -> {
+      let #(budget, options) =
+        list.map_fold(options, budget, fn(budget, option) {
+          let #(exported, budget) = exported_value(option, scope, budget)
+          #(budget, exported)
+        })
+      #(types.Choice(options), budget)
+    }
+    types.CallResult(callee, args) -> {
+      let #(args, budget) = exported_arguments(args, scope, budget)
+      #(types.CallResult(exported_callee(callee, scope), args), budget)
+    }
+    types.ReturnedOperator(callee, args) -> {
+      let #(args, budget) = exported_arguments(args, scope, budget)
+      #(types.ReturnedOperator(exported_callee(callee, scope), args), budget)
+    }
+    Constructed(fields:, ..) -> {
+      let #(budget, fields) =
+        dict.fold(fields, #(budget, dict.new()), fn(acc, label, field) {
+          let #(budget, fields) = acc
+          let #(exported, budget) = exported_value(field, scope, budget)
+          #(budget, dict.insert(fields, label, exported))
+        })
+      #(
+        Constructed(fields:, components: [], coverage: types.PartialValue),
+        budget,
+      )
+    }
+  }
+}
+
+fn exported_arguments(
+  args: List(CallArgument),
+  scope: ModuleScope,
+  budget: Int,
+) -> #(List(CallArgument), Int) {
+  let #(budget, args) =
+    list.map_fold(args, budget, fn(budget, arg) {
+      let #(value, budget) = exported_value(arg.value, scope, budget)
+      #(budget, CallArgument(..arg, value:, span: no_site))
+    })
+  #(args, budget)
+}
+
+// A producer named by a call, as another module names it: this module's own
+// function qualified with the module.
+fn exported_callee(callee: QualifiedName, scope: ModuleScope) -> QualifiedName {
+  case callee.module, scope.module {
+    "", "" -> callee
+    "", module -> QualifiedName(module:, function: callee.function)
+    _, _ -> callee
   }
 }
 

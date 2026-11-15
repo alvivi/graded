@@ -38,7 +38,7 @@ pub fn known_effectful_test() {
 pub fn known_pure_module_test() {
   effects.declared_effects(
     support.knowledge_base(),
-    QualifiedName("gleam/list", "map"),
+    QualifiedName("gleam/list", "length"),
   )
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.new()))
@@ -518,6 +518,7 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
     effects.load_catalog(
       support.catalog_files(root <> "/catalog"),
       root <> "/manifest.toml",
+      effects.trusting_reading(),
     )
   dict.get(all_effects, QualifiedName("shared/mod", "run"))
   |> result.map(fn(entry) {
@@ -548,6 +549,7 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
     effects.load_catalog(
       support.catalog_files(root <> "/catalog"),
       root <> "/manifest.toml",
+      effects.trusting_reading(),
     )
   dict.get(all_effects, QualifiedName("shared/mod", "run"))
   |> result.map(fn(entry) {
@@ -575,6 +577,7 @@ pub fn a_catalog_bounded_external_records_its_bounds_test() {
     effects.load_catalog(
       support.catalog_files(root <> "/catalog"),
       root <> "/manifest.toml",
+      effects.trusting_reading(),
     )
   dict.get(all_effects, QualifiedName("shared/mod", "each"))
   |> result.map(fn(entry) {
@@ -608,6 +611,7 @@ pub fn a_catalog_second_order_external_records_its_term_test() {
     effects.load_catalog(
       support.catalog_files(root <> "/catalog"),
       root <> "/manifest.toml",
+      effects.trusting_reading(),
     )
   dict.get(all_effects, QualifiedName("shared/mod", "with_tx"))
   |> should.equal(
@@ -683,7 +687,11 @@ pub fn the_bundled_catalog_declares_promise_new_test() {
       ),
     ])
   let #(all_effects, module_effects, params, _type_fields) =
-    effects.load_catalog(support.bundled_catalog(), root <> "/manifest.toml")
+    effects.load_catalog(
+      support.bundled_catalog(),
+      root <> "/manifest.toml",
+      effects.trusting_reading(),
+    )
   let new = QualifiedName("gleam/javascript/promise", "new")
   dict.get(all_effects, new)
   |> should.equal(
@@ -742,6 +750,7 @@ fn catalog_clash_entry(
     effects.load_catalog(
       support.catalog_files(root <> "/catalog"),
       root <> "/manifest.toml",
+      effects.trusting_reading(),
     )
   cleanup(root)
   #(
@@ -822,7 +831,7 @@ fn dep_spec_load(
     #(package <> ".graded", source),
     ..shipped_sources("src", modules)
   ])
-  let load = effects.load_dep_spec(root, package)
+  let load = effects.load_dep_spec(root, package, effects.trusting_reading())
   cleanup(root)
   load
 }
@@ -1283,6 +1292,7 @@ fn installed_dep_under_catalog(
     effects.load_catalog(
       support.catalog_files(root <> "/catalog"),
       root <> "/manifest.toml",
+      effects.trusting_reading(),
     )
   let kb =
     effects.knowledge_base_from_catalog(
@@ -1295,6 +1305,7 @@ fn installed_dep_under_catalog(
         type_fields:,
       ),
       dict.new(),
+      effects.trusting_reading(),
     )
   cleanup(root)
   kb
@@ -1742,7 +1753,7 @@ pub fn a_rejected_module_line_for_unshipped_code_blocks_nothing_test() {
 
 pub fn an_absent_spec_reads_as_absent_test() {
   let root = write_fixture("build/eff_spec_absent", [#("gleam.toml", "")])
-  let load = effects.load_dep_spec(root, "dep")
+  let load = effects.load_dep_spec(root, "dep", effects.trusting_reading())
   cleanup(root)
   load |> should.equal(effects.SpecAbsent)
 }
@@ -1751,7 +1762,7 @@ pub fn a_spec_that_is_not_utf8_reads_as_unreadable_test() {
   let root = write_fixture("build/eff_spec_not_utf8", [#("gleam.toml", "")])
   let path = root <> "/dep.graded"
   support.write_not_utf8(path)
-  let load = effects.load_dep_spec(root, "dep")
+  let load = effects.load_dep_spec(root, "dep", effects.trusting_reading())
   cleanup(root)
   load |> should.equal(effects.SpecUnreadable(path, simplifile.NotUtf8))
 }
@@ -1760,7 +1771,7 @@ pub fn a_directory_at_the_spec_path_reads_as_unreadable_test() {
   let root = write_fixture("build/eff_spec_directory", [#("gleam.toml", "")])
   let path = root <> "/dep.graded"
   support.write_directory_at(path)
-  let load = effects.load_dep_spec(root, "dep")
+  let load = effects.load_dep_spec(root, "dep", effects.trusting_reading())
   cleanup(root)
   load |> should.equal(effects.SpecUnreadable(path, simplifile.Eisdir))
 }
@@ -2241,7 +2252,12 @@ pub fn a_path_dependencys_source_dir_is_under_its_own_root_test() {
       #("vendor/foo/foo.graded", "assume foo.f : []\n"),
     ])
   let dep_root = root <> "/app/../vendor/foo"
-  let load = effects.load_dep_spec_at(dep_root, dep_root <> "/foo.graded")
+  let load =
+    effects.load_dep_spec_at(
+      dep_root,
+      dep_root <> "/foo.graded",
+      effects.trusting_reading(),
+    )
   cleanup(root)
   let assert effects.SpecLoaded(shipped:, ..) = load
   shipped
@@ -2261,7 +2277,7 @@ pub fn a_moved_spec_file_does_not_move_the_source_dir_test() {
       ),
       #("specs/dep.graded", "assume dep.f : [Time]\n"),
     ])
-  let load = effects.load_dep_spec(root, "dep")
+  let load = effects.load_dep_spec(root, "dep", effects.trusting_reading())
   cleanup(root)
   let assert effects.SpecLoaded(foreign:, shipped:, ..) = load
   foreign |> should.equal(["dep.f"])
@@ -3713,38 +3729,73 @@ pub fn a_declared_gleam_function_widens_on_the_value_channel_alone_test() {
 
 // Latent-effect reading
 //
-// The reading a run chose before parsing travels with the knowledge base its
-// loaders build.
 
-pub fn a_knowledge_base_carries_the_reading_it_was_loaded_under_test() {
-  let catalog = effects.load_project_catalog([], "/tmp/graded_no_manifest.toml")
-  effects.knowledge_base_from_catalog_with(
-    "/tmp/graded_no_packages",
-    catalog,
-    dict.new(),
-    effects.SpecReading(
-      mode: types.Active,
-      refuses: fn(_) { False },
-      rebase: fn(_dep_root, file) { file },
-    ),
-  )
-  |> effects.lat_mode
-  |> should.equal(types.Active)
-  effects.knowledge_base_from_catalog(
-    "/tmp/graded_no_packages",
-    catalog,
-    dict.new(),
-  )
-  |> effects.lat_mode
-  |> should.equal(types.Inactive)
+// A newly loaded package's carried results, admitted apart from its lines'
+// effects: only where the baseline, a reviewed catalog line here, declares none.
+
+fn parsed_assume(line: String) -> types.AssumeAnnotation {
+  let assert Ok(types.GradedFile(lines: [types.AssumeLine(assume, _)])) =
+    annotation.parse_file(line)
+  assume
 }
 
-pub fn every_knowledge_base_reads_inactive_unless_told_test() {
-  effects.new_knowledge_base()
-  |> effects.lat_mode
-  |> should.equal(types.Inactive)
-  effects.new_knowledge_base()
-  |> effects.with_lat_mode(types.Active)
-  |> effects.lat_mode
-  |> should.equal(types.Active)
+fn newly_loaded_answer(
+  catalog_line: String,
+  loaded_line: String,
+) -> #(EffectSet, option.Option(types.EffectTerm)) {
+  let name = QualifiedName("p/m", "f")
+  let baseline =
+    effects.new_knowledge_base()
+    |> effects.with_assumes([parsed_assume(catalog_line)], types.Catalog("p"))
+    |> effects.with_audit(
+      audit.CatalogAudit(..audit.empty(), reviewed: set.from_list([name])),
+    )
+  let loaded =
+    effects.with_newly_loaded_spec(
+      baseline,
+      baseline,
+      effects.DepSpec(
+        effects: dict.new(),
+        assumed_params: dict.new(),
+        inferred_params: dict.new(),
+        returns: dict.new(),
+        declared_returns: dict.new(),
+        type_fields: [],
+        assumes: [parsed_assume(loaded_line)],
+      ),
+      types.PathDependency("p"),
+    )
+  let assert effects.Known(term, _) = effects.lookup(loaded, name)
+  let assert Some(#(contract, _bounds)) = effects.winning_contract(loaded, name)
+  #(effect_term.to_effect_set(term), contract.carries)
+}
+
+pub fn a_rejected_line_fills_a_carried_result_the_baseline_lacks_test() {
+  newly_loaded_answer(
+    "assume p/m.f : [Stdout]",
+    "assume p/m.f : [Unknown] where carries : [Http]",
+  )
+  |> should.equal(#(
+    Specific(set.from_list(["Stdout"])),
+    Some(effect_term.from_effect_set(Specific(set.from_list(["Http"])))),
+  ))
+}
+
+pub fn a_baseline_carried_result_stays_on_an_admitted_line_test() {
+  newly_loaded_answer(
+    "assume p/m.f : [] where carries : [Stdout]",
+    "assume p/m.f : [File] where carries : [Http]",
+  )
+  |> should.equal(#(
+    Specific(set.from_list(["File"])),
+    Some(effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))),
+  ))
+}
+
+pub fn a_baseline_result_naming_its_variables_keeps_its_line_test() {
+  newly_loaded_answer(
+    "assume p/m.f(x: [x]) : [] where runs : [], carries : [x]",
+    "assume p/m.f : [File] where carries : [Http]",
+  )
+  |> should.equal(#(Specific(set.new()), Some(types.TVar("x"))))
 }

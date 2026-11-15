@@ -359,7 +359,7 @@ fn project(directory: String) -> String {
 
 fn active_lines() -> List(String) {
   let directory = project("/tmp/graded_latent_charges")
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   lines
 }
@@ -480,11 +480,10 @@ fn inspect_kb(
 ) -> effects.KnowledgeBase {
   let parse = fn(line) {
     let assert Ok(types.GradedFile(lines: [types.AssumeLine(assume, _)])) =
-      annotation.parse_file_with(line, types.Active)
+      annotation.parse_file(line)
     assume
   }
   effects.new_knowledge_base()
-  |> effects.with_lat_mode(types.Active)
   |> effects.with_assumes([parse(catalog_line)], types.Catalog("fake"))
   |> effects.with_assumes(
     [parse("assume app/ffi.shout : [Stdout]"), ..list.map(written, parse)],
@@ -578,14 +577,10 @@ pub fn a_binding_shadowing_a_module_reads_as_its_field_test() {
         "import app/ffi\n\npub type Printer {\n  Printer(say: fn(String) -> Nil)\n}\n\npub fn shadowed(ffi: Printer) -> Nil {\n  each([\"x\"], ffi.say)\n}\n\nfn each(list: List(String), f: fn(String) -> Nil) -> Nil {\n  app_each(list, f)\n}\n\nfn app_each(list, f) {\n  ffi.each(list, f)\n}\n",
       ),
     ])
-  let assert Ok(active) = graded.inferred_lines_with(directory, types.Active)
-  let assert Ok(inactive) =
-    graded.inferred_lines_with(directory, types.Inactive)
+  let assert Ok(active) = graded.inferred_lines(directory)
   support.cleanup(directory)
   answer(active, "shadowed")
   |> should.equal("effects app.shadowed : [Unknown]")
-  answer(inactive, "shadowed")
-  |> should.equal("effects app.shadowed : [Stdout]")
 }
 
 pub fn a_receiver_built_per_target_reads_unknown_test() {
@@ -599,7 +594,7 @@ pub fn a_receiver_built_per_target_reads_unknown_test() {
         "import app/ffi\n\npub type Config {\n  Config(on_item: fn(String) -> Nil)\n}\n\n@target(erlang)\nfn make() -> Config {\n  Config(on_item: ffi.say)\n}\n\n@target(javascript)\nfn make() -> Config {\n  Config(on_item: fn(_) { Nil })\n}\n\npub fn handler() -> Nil {\n  let cfg = make()\n  ffi.each([\"x\"], cfg.on_item)\n}\n",
       ),
     ])
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   answer(lines, "handler") |> should.equal("effects app.handler : [Unknown]")
 }
@@ -647,7 +642,7 @@ pub fn only_a_written_line_charges_its_default_test() {
   |> list.index_map(fn(dependency_spec, index) {
     let parent = "/tmp/graded_latent_lineage_" <> string.inspect(index)
     let root = summary_project(parent, dependency_spec)
-    let assert Ok(lines) = graded.inferred_lines_with(root, types.Active)
+    let assert Ok(lines) = graded.inferred_lines(root)
     support.cleanup(parent)
     answer(lines, "go")
   })
@@ -672,18 +667,308 @@ pub fn a_field_call_runs_what_its_arguments_carry_test() {
         "import app/ffi\n\npub type Runner {\n  Runner(run_all: fn(List(fn() -> Nil)) -> Nil)\n}\n\nfn loud() -> Nil {\n  ffi.shout()\n}\n\npub fn go(runner: Runner) -> Nil {\n  runner.run_all([loud])\n}\n",
       ),
     ])
-  let assert Ok(active) = graded.inferred_lines_with(directory, types.Active)
-  let assert Ok(inactive) =
-    graded.inferred_lines_with(directory, types.Inactive)
+  let assert Ok(active) = graded.inferred_lines(directory)
   support.cleanup(directory)
   answer(active, "go")
   |> should.equal(
     "effects app.go(runner.run_all: [runner.run_all]) : [Stdout, runner.run_all]",
   )
-  answer(inactive, "go")
-  |> should.equal(
-    "effects app.go(runner.run_all: [runner.run_all]) : [runner.run_all]",
-  )
+}
+
+// Constructors as callbacks
+
+const constructor_ffi =
+  "pub type Box(a) {
+  Box(value: a)
+}
+
+pub type Pair(a, b) {
+  Pair(left: a, right: b)
+}
+
+pub type Count {
+  Count(n: Int)
+}
+
+@external(erlang, \"m\", \"shout\")
+pub fn shout() -> Nil
+
+@external(erlang, \"m\", \"project\")
+pub fn project(xs: List(a), f: fn(a) -> b) -> List(b)
+
+@external(erlang, \"m\", \"project_unrelayed\")
+pub fn project_unrelayed(xs: List(a), f: fn(a) -> b) -> List(b)
+
+@external(erlang, \"m\", \"zip_with\")
+pub fn zip_with(xs: List(a), ys: List(b), f: fn(a, b) -> c) -> List(c)
+
+@external(erlang, \"m\", \"run_boxes\")
+pub fn run_boxes(xs: List(Box(fn() -> Nil))) -> Nil
+
+@external(erlang, \"m\", \"run_oks\")
+pub fn run_oks(xs: List(Result(fn() -> Nil, Nil))) -> Nil
+
+@external(erlang, \"m\", \"run_pairs\")
+pub fn run_pairs(xs: List(Pair(fn() -> Nil, fn() -> Nil))) -> Nil
+
+@external(erlang, \"m\", \"run_any\")
+pub fn run_any(x: a) -> Nil
+"
+
+const constructor_spec =
+  "assume app/ffi.shout : [Stdout]
+assume app/ffi.project(xs: [x], f: [f]) : [f] where runs : [], relay : f(x), carries : [f.returns]
+assume app/ffi.project_unrelayed(xs: [x], f: [f]) : [f] where runs : [], carries : [f.returns]
+assume app/ffi.zip_with(xs: [x], ys: [y], f: [f]) : [f] where runs : [], relay : f(x, y), carries : [f.returns]
+assume app/ffi.run_boxes : []
+assume app/ffi.run_oks : []
+assume app/ffi.run_pairs : []
+assume app/ffi.run_any : []
+"
+
+const constructor_app =
+  "import app/ffi.{Box, Count, Pair}
+
+fn loud() -> Nil {
+  ffi.shout()
+}
+
+fn quiet() -> Nil {
+  Nil
+}
+
+pub fn boxed() -> Nil {
+  ffi.run_boxes(ffi.project([loud], Box))
+}
+
+pub fn boxed_quiet() -> Nil {
+  ffi.run_boxes(ffi.project([quiet], Box))
+}
+
+pub fn constructed_only() -> List(ffi.Box(fn() -> Nil)) {
+  ffi.project([loud], Box)
+}
+
+pub fn okayed() -> Nil {
+  ffi.run_oks(ffi.project([loud], Ok))
+}
+
+pub fn paired() -> Nil {
+  ffi.run_pairs(ffi.zip_with([quiet], [loud], Pair))
+}
+
+pub fn unrelayed() -> Nil {
+  ffi.run_boxes(ffi.project_unrelayed([quiet], Box))
+}
+
+pub fn counted() -> Nil {
+  ffi.run_any(ffi.project([1], Count))
+}
+
+pub fn escaped() -> Nil {
+  ffi.run_any(Box)
+}
+"
+
+pub fn a_constructor_callback_result_carries_its_arguments_test() {
+  let directory =
+    support.write_fixture("/tmp/graded_latent_constructor", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #("app.graded", constructor_spec),
+      #("src/app/ffi.gleam", constructor_ffi),
+      #("src/app.gleam", constructor_app),
+    ])
+  let assert Ok(lines) = graded.inferred_lines(directory)
+  support.cleanup(directory)
+  [
+    "boxed", "boxed_quiet", "constructed_only", "okayed", "paired", "unrelayed",
+    "counted", "escaped",
+  ]
+  |> list.map(answer(lines, _))
+  |> should.equal([
+    "effects app.boxed : [Stdout]",
+    "effects app.boxed_quiet : []",
+    "effects app.constructed_only : []",
+    "effects app.okayed : [Stdout]",
+    "effects app.paired : [Stdout]",
+    "effects app.unrelayed : [Unknown]",
+    "effects app.counted : []",
+    "effects app.escaped : [Unknown]",
+  ])
+}
+
+// Mutual recursion through function values held in data: each function hands
+// the other to code that may run it, so reading either lifts the other.
+
+const recursion_ffi =
+  "pub type Holder {
+  Holder(run: fn() -> Nil)
+}
+
+@external(erlang, \"m\", \"shout\")
+pub fn shout() -> Nil
+
+@external(erlang, \"m\", \"each\")
+pub fn each(list: List(a), f: fn(a) -> Nil) -> Nil
+
+@external(erlang, \"m\", \"run_any\")
+pub fn run_any(x: a) -> Nil
+"
+
+const recursion_spec =
+  "assume app/ffi.shout : [Stdout]
+assume app/ffi.each(list: [l], f: [f]) : [f] where runs : [], relay : f(l)
+assume app/ffi.run_any : []
+"
+
+const recursion_app =
+  "import app/ffi.{Holder}
+
+fn loud() -> Nil {
+  ffi.shout()
+}
+
+fn quiet_flag(_flag: Bool) -> Nil {
+  Nil
+}
+
+fn apply(f: fn() -> Nil, _n: Int) -> Nil {
+  f()
+}
+
+fn producer(f: fn() -> Nil) -> fn() -> Nil {
+  f
+}
+
+pub fn list_a(n: Int) -> Nil {
+  case n > 0 {
+    True -> ffi.each([list_b], fn(f) { f(n - 1) })
+    False -> Nil
+  }
+}
+
+pub fn list_b(n: Int) -> Nil {
+  loud()
+  case n > 0 {
+    True -> ffi.each([list_a], fn(f) { f(n - 1) })
+    False -> Nil
+  }
+}
+
+pub fn tuple_a() -> Nil {
+  ffi.run_any(#(tuple_b, 1))
+}
+
+pub fn tuple_b() -> Nil {
+  loud()
+  ffi.run_any(#(tuple_a, 1))
+}
+
+pub fn record_a() -> Nil {
+  ffi.run_any(Holder(record_b))
+}
+
+pub fn record_b() -> Nil {
+  loud()
+  ffi.run_any(Holder(record_a))
+}
+
+pub fn choice_a(flag: Bool) -> Nil {
+  ffi.run_any(case flag {
+    True -> choice_b
+    False -> quiet_flag
+  })
+}
+
+pub fn choice_b(flag: Bool) -> Nil {
+  loud()
+  ffi.run_any(case flag {
+    True -> choice_a
+    False -> quiet_flag
+  })
+}
+
+pub fn traced_a() -> Nil {
+  let holder = Holder(traced_b)
+  ffi.run_any(holder.run)
+}
+
+pub fn traced_b() -> Nil {
+  loud()
+  let holder = Holder(traced_a)
+  ffi.run_any(holder.run)
+}
+
+pub fn closure_a() -> Nil {
+  let g = closure_b
+  ffi.run_any(fn() { g() })
+}
+
+pub fn closure_b() -> Nil {
+  loud()
+  let g = closure_a
+  ffi.run_any(fn() { g() })
+}
+
+pub fn capture_a() -> Nil {
+  ffi.run_any(apply(capture_b, _))
+}
+
+pub fn capture_b() -> Nil {
+  loud()
+  ffi.run_any(apply(capture_a, _))
+}
+
+pub fn produced_a() -> Nil {
+  ffi.run_any(producer(produced_b))
+}
+
+pub fn produced_b() -> Nil {
+  loud()
+  ffi.run_any(producer(produced_a))
+}
+"
+
+pub fn recursion_through_function_values_in_data_ends_test() {
+  let directory =
+    support.write_fixture("/tmp/graded_latent_value_recursion", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #("app.graded", recursion_spec),
+      #("src/app/ffi.gleam", recursion_ffi),
+      #("src/app.gleam", recursion_app),
+    ])
+  let assert Ok(lines) = graded.inferred_lines(directory)
+  support.cleanup(directory)
+  [
+    "list", "tuple", "record", "choice", "traced", "closure", "capture",
+    "produced",
+  ]
+  |> list.flat_map(fn(shape) { [shape <> "_a", shape <> "_b"] })
+  |> list.map(fn(function) {
+    let prefix = "effects app." <> function <> " : "
+    let assert Ok(line) = list.find(lines, string.starts_with(_, prefix))
+    #(function, string.drop_start(line, string.length(prefix)))
+  })
+  // A reference the analysis meets again while reading it reads `[Unknown]`,
+  // never nothing.
+  |> should.equal([
+    #("list_a", "[Stdout]"),
+    #("list_b", "[Stdout]"),
+    #("tuple_a", "[Stdout]"),
+    #("tuple_b", "[Stdout]"),
+    #("record_a", "[Stdout]"),
+    #("record_b", "[Stdout]"),
+    #("choice_a", "[Stdout]"),
+    #("choice_b", "[Stdout]"),
+    #("traced_a", "[Unknown]"),
+    #("traced_b", "[Stdout, Unknown]"),
+    #("closure_a", "[Unknown]"),
+    #("closure_b", "[Stdout, Unknown]"),
+    #("capture_a", "[Stdout, Unknown]"),
+    #("capture_b", "[Stdout, Unknown]"),
+    #("produced_a", "[Stdout]"),
+    #("produced_b", "[Stdout]"),
+  ])
 }
 
 // Definitions `@target` gives once per target, in a package read on both:
@@ -717,7 +1002,7 @@ fn pair_answers(
       #("src/probe/ffi.gleam", pair_ffi),
       ..sources
     ])
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   list.filter(lines, fn(line) { !string.starts_with(line, "effects probe/") })
 }
@@ -876,7 +1161,7 @@ fn published_answer(
       #("build/packages/dep/src/dep.gleam", dep_source),
     ])
   let assert Ok(Nil) = graded.run_infer(directory <> "/build/packages/dep")
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   list.filter(lines, string.starts_with(_, "effects probe.main"))
 }
@@ -1235,7 +1520,7 @@ pub fn shout() -> Nil
         }),
       ),
     )
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   lines
   |> list.filter(fn(line) { !string.starts_with(line, "effects probe/") })
@@ -1573,7 +1858,7 @@ pub fn via_own_returns() -> Nil {
 ",
       ),
     ])
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   list.filter(lines, fn(line) {
     string.starts_with(line, "effects probe.")
@@ -1738,7 +2023,7 @@ pub fn via_own_chain() -> Nil {
 ",
       ),
     ])
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   list.filter(lines, fn(line) { string.starts_with(line, "effects probe.") })
   |> list.sort(string.compare)
@@ -1789,7 +2074,7 @@ fn container_answer(targets: List(String)) -> types.EffectSet {
   let name = types.QualifiedName("fake/box", "make")
   let parse = fn(line) {
     let assert Ok(types.GradedFile(lines: [types.AssumeLine(assume, _)])) =
-      annotation.parse_file_with(line, types.Active)
+      annotation.parse_file(line)
     assume
   }
   let assert Ok(box) =
@@ -1803,7 +2088,6 @@ fn container_answer(targets: List(String)) -> types.EffectSet {
   let package_targets = types.NamedTargets(set.from_list(targets))
   let knowledge_base =
     effects.new_knowledge_base()
-    |> effects.with_lat_mode(types.Active)
     |> effects.with_package_targets(package_targets)
     |> effects.with_assumes(
       [parse("assume fake/box.make : []")],
@@ -1980,8 +2264,7 @@ fn path_dependency_reading(
       line
     }
     Error(Nil) -> {
-      let assert Ok(lines) =
-        graded.inferred_lines_with(root <> "/app", types.Active)
+      let assert Ok(lines) = graded.inferred_lines(root <> "/app")
       let assert Ok(line) =
         list.find(lines, string.starts_with(_, "effects app.main"))
       line
@@ -2164,7 +2447,7 @@ fn callback_result_reading(
     }
     Error(Nil) -> Nil
   }
-  let lines = graded.inferred_lines_with(root <> "/app", types.Active)
+  let lines = graded.inferred_lines(root <> "/app")
   let _ = simplifile.delete(catalog_file <> ".graded")
   let _ = simplifile.delete(catalog_file <> ".audit")
   support.cleanup(root)
@@ -2276,7 +2559,7 @@ fn kind_reading(
     ),
     #("dep/src/dep.gleam", dep_source),
   ])
-  let lines = graded.inferred_lines_with(root <> "/app", types.Active)
+  let lines = graded.inferred_lines(root <> "/app")
   support.cleanup(root)
   use lines <- result.try(lines |> result.replace_error(Nil))
   list.find(lines, string.starts_with(_, "effects app.main"))
@@ -2434,7 +2717,7 @@ fn wide_pair_work(modules: Int, keys: Int) -> Int {
     })
   ])
   let before = reductions()
-  let assert Ok(_) = graded.inferred_lines_with(root <> "/app", types.Active)
+  let assert Ok(_) = graded.inferred_lines(root <> "/app")
   let spent = reductions() - before
   support.cleanup(root)
   spent
@@ -2486,7 +2769,7 @@ fn refused_lines_work(count: Int) -> #(Result(String, Nil), Int) {
     ),
   ])
   let before = reductions()
-  let lines = graded.inferred_lines_with(root <> "/app", types.Active)
+  let lines = graded.inferred_lines(root <> "/app")
   let spent = reductions() - before
   support.cleanup(root)
   let line =
@@ -2556,7 +2839,7 @@ fn package_work(
   let before = reductions()
   let reported = case command {
     "infer" -> {
-      let assert Ok(_) = graded.inferred_lines_with(root, types.Active)
+      let assert Ok(_) = graded.inferred_lines(root)
       0
     }
     _ -> {
@@ -2619,7 +2902,7 @@ fn quoted_error(consumer: String, spec: String) -> String {
       "pub type Box {\n  Box(run: fn() -> Nil)\n}\n\n@target(erlang)\npub fn call(cb: Box, value: fn() -> Nil) -> Nil {\n  let _ = value\n  cb.run()\n}\n\n@target(javascript)\npub fn call(cb: Box, value: fn() -> Nil) -> Nil {\n  let _ = value\n  cb.run()\n}\n",
     ),
   ])
-  let result = graded.inferred_lines_with(root <> "/app", types.Active)
+  let result = graded.inferred_lines(root <> "/app")
   support.cleanup(root)
   case result {
     Error(graded.GradedParseError(message:, ..)) ->
@@ -2768,7 +3051,7 @@ fn printer() -> fn() -> Nil
         ),
       ],
     )
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   lines
   |> list.filter(fn(line) { string.starts_with(line, "effects probe.main") })
@@ -2929,7 +3212,7 @@ pub fn value() -> Held
         ),
       ],
     )
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   lines
   |> list.filter(fn(line) { string.starts_with(line, "effects probe.main") })
@@ -3094,7 +3377,7 @@ pub fn other() -> Nil {
 ",
       ),
     ])
-  let assert Ok(lines) = graded.inferred_lines_with(directory, types.Active)
+  let assert Ok(lines) = graded.inferred_lines(directory)
   support.cleanup(directory)
   lines
   |> list.filter(fn(line) { !string.starts_with(line, "effects probe/") })
@@ -3361,7 +3644,7 @@ fn one_target_main(dependency: String) -> #(List(String), Int, String, String) {
     ])
   let app = directory <> "/app"
   let inferred =
-    graded.inferred_lines_with(app, types.Active)
+    graded.inferred_lines(app)
     |> result.unwrap([])
     |> list.filter(string.starts_with(_, "effects app."))
   let violations =

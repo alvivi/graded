@@ -6,3 +6,14 @@ assume gleam/javascript/symbol : []
 
 // `new` calls its executor once, handing it a pure `resolve`.
 assume gleam/javascript/promise.new(a: [a]) : [a([])]
+
+// gleam_javascript — what the reviewed functions do with the functions they are given
+assume gleam/javascript/array.fold(over: [over], with: [with]) : [with] where runs : [], relay : with(_, over)
+assume gleam/javascript/array.fold_right(over: [over], with: [with]) : [with] where runs : [], relay : with(_, over)
+assume gleam/javascript/array.map(a: [a], with: [with]) : [with] where runs : [], relay : with(a)
+assume gleam/javascript/promise.await(a: [a], b: [b]) : [b] where runs : [], relay : b(a)
+assume gleam/javascript/promise.map(a: [a], b: [b]) : [b] where runs : [], relay : b(a)
+assume gleam/javascript/promise.map_try(promise: [promise], callback: [callback]) : [callback] where runs : [], relay : callback(promise)
+assume gleam/javascript/promise.rescue(b: [b]) : [b] where runs : []
+assume gleam/javascript/promise.tap(promise: [promise], callback: [callback]) : [callback] where runs : [], relay : callback(promise)
+assume gleam/javascript/promise.try_await(promise: [promise], callback: [callback]) : [callback] where runs : [], relay : callback(promise)

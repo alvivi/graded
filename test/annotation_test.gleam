@@ -2961,7 +2961,7 @@ fn union_vars(first: EffectTerm, second: String) -> EffectTerm {
 fn parse_active(
   input: String,
 ) -> Result(types.GradedFile, annotation.ParseError) {
-  annotation.parse_file_with(input, types.Active)
+  annotation.parse_file(input)
 }
 
 fn active_assume(input: String) -> types.AssumeAnnotation {
@@ -2983,19 +2983,6 @@ pub fn latent_clauses_read_into_the_contract_test() {
       effect_term.normalize(TUnion([TVar("f"), TVar("f.returns"), TVar("l")])),
     ),
   ))
-}
-
-pub fn latent_clauses_stay_unread_without_the_rules_test() {
-  let assert Ok(types.GradedFile(lines: [AssumeLine(assume, clauses)])) =
-    annotation.parse_file(
-      "assume app/ffi.run(values: [l]) : [] where runs : [l], carries : [l]",
-    )
-  assume.contract |> should.equal(types.no_contract)
-  clauses
-  |> should.equal([
-    UnknownClause(key: "runs", payload: "[l]"),
-    UnknownClause(key: "carries", payload: "[l]"),
-  ])
 }
 
 pub fn a_parameter_named_arguments_is_an_ordinary_bound_test() {
@@ -3036,13 +3023,13 @@ pub fn an_out_of_scope_variable_is_refused_by_the_owner_test() {
 
 pub fn a_malformed_clause_says_nothing_in_a_reader_that_cannot_fix_it_test() {
   let line = "assume app/ffi.run(values: [l]) : [Disk] where runs : [m]"
-  let #(file, rejected) = annotation.parse_file_lenient_with(line, types.Active)
+  let #(file, rejected) = annotation.parse_file_lenient(line)
   rejected |> should.equal([])
   let assert [AssumeLine(assume, clauses)] = file.lines
   assume.effects |> should.equal(Some(TLabels(set.from_list(["Disk"]))))
   assume.contract |> should.equal(types.no_contract)
   clauses |> should.equal([UnknownClause(key: "runs", payload: "[m]")])
-  let assert Ok(catalog) = annotation.parse_catalog_with(line, types.Active)
+  let assert Ok(catalog) = annotation.parse_catalog(line)
   let assert [AssumeLine(catalogued, _)] = catalog.lines
   catalogued.contract |> should.equal(types.no_contract)
 }
@@ -3062,8 +3049,7 @@ pub fn malformed_payloads_are_refused_by_the_owner_test() {
 pub fn a_carried_variable_in_the_effect_term_is_refused_by_any_reader_test() {
   let line = "assume app/ffi.run(values: [l]) : [l] where runs : [l]"
   parse_active(line) |> should.be_error
-  let #(_file, rejected) =
-    annotation.parse_file_lenient_with(line, types.Active)
+  let #(_file, rejected) = annotation.parse_file_lenient(line)
   list.length(rejected) |> should.equal(1)
 }
 

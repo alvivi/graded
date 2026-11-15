@@ -1,3 +1,6 @@
 // gleam_regexp — pure regex matching
 
 assume gleam/regexp : []
+
+// gleam_regexp — what the reviewed functions do with the functions they are given
+assume gleam/regexp.match_map(substitute: [substitute]) : [substitute] where runs : []

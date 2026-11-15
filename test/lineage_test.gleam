@@ -13,8 +13,7 @@ import graded/internal/types.{
 import support
 
 fn knowledge_base(directory: String) -> effects.KnowledgeBase {
-  let assert Ok(knowledge_base) =
-    graded.context_knowledge_base(directory, types.Active)
+  let assert Ok(knowledge_base) = graded.context_knowledge_base(directory)
   knowledge_base
 }
 
@@ -202,7 +201,7 @@ pub fn a_generated_summary_and_its_inference_answer_alike_test() {
   let generated_base = knowledge_base(generated)
   let inferred_base = knowledge_base(inferred)
   let answer = fn(directory) {
-    graded.run_effect_with(directory, "app.go", graded.Graded, types.Active)
+    graded.run_effect_formatted(directory, "app.go", graded.Graded)
   }
   let generated_answer = answer(generated)
   let inferred_answer = answer(inferred)

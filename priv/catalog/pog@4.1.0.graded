@@ -1,6 +1,6 @@
 // pog — PostgreSQL client
 
-assume pog.execute : [Database]
+assume pog.execute(query: [query]) : [Database] where runs : [query]
 assume pog.query : [Database]
 assume pog.start : [Database, Process]
 assume pog.supervised : [Database, Process]

@@ -1,9 +1,9 @@
 // gleam_otp — OTP actors and supervisors
 
-assume gleam/otp/actor.start : [Process]
-assume gleam/otp/actor.start_spec : [Process]
-assume gleam/otp/actor.send : [Process]
+assume gleam/otp/actor.start(state: [state], loop: [loop]) : [Process, loop] where runs : [state]
+assume gleam/otp/actor.start_spec(spec: [spec]) : [Process] where runs : [spec]
+assume gleam/otp/actor.send(msg: [msg]) : [Process] where runs : [msg]
 assume gleam/otp/actor.call : [Process]
 
 assume gleam/otp/supervisor.start : [Process]
-assume gleam/otp/supervisor.start_spec : [Process]
+assume gleam/otp/supervisor.start_spec(spec: [spec]) : [Process] where runs : [spec]

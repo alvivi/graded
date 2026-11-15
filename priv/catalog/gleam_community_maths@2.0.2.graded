@@ -1,3 +1,11 @@
 // gleam_community_maths — pure mathematics functions and utilities
 
 assume gleam_community/maths : []
+
+// gleam_community_maths — what the reviewed functions do with the functions they are given
+assume gleam_community/maths.arg_maximum(arr: [arr], compare: [compare]) : [compare] where runs : [], relay : compare(arr, arr)
+assume gleam_community/maths.arg_minimum(arr: [arr], compare: [compare]) : [compare] where runs : [], relay : compare(arr, arr)
+assume gleam_community/maths.extrema(arr: [arr], compare: [compare]) : [compare] where runs : [], relay : compare(arr, arr)
+assume gleam_community/maths.list_maximum(arr: [arr], compare: [compare]) : [compare] where runs : [], relay : compare(arr, arr)
+assume gleam_community/maths.list_minimum(arr: [arr], compare: [compare]) : [compare] where runs : [], relay : compare(arr, arr)
+assume gleam_community/maths.minmax(compare: [compare]) : [compare] where runs : []

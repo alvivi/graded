@@ -63,7 +63,6 @@ fn context(
     dependency_sources_are_complete: fn() {
       panic as "dependency completeness was forced"
     },
-    mode: types.Inactive,
     resolve_bounds: fn(_) { [] },
     reader_view: checker.as_written,
   )

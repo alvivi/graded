@@ -1,5 +1,5 @@
 // lustre_http — HTTP client for Lustre apps
 
-assume lustre_http.send : [Http]
-assume lustre_http.get : [Http]
-assume lustre_http.post : [Http]
+assume lustre_http.send(expect: [x]) : [Http] where runs : [], carries : [Http, x]
+assume lustre_http.get(expect: [x]) : [Http] where runs : [], carries : [Http, x]
+assume lustre_http.post(expect: [x]) : [Http] where runs : [], carries : [Http, x]

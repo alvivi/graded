@@ -1,3 +1,7 @@
 // bigi — pure arbitrary-precision integer arithmetic
 
 assume bigi : []
+
+// bigi — what the reviewed functions do with the functions they are given
+assume bigi.from_base(alphabet: [alphabet]) : [alphabet] where runs : []
+assume bigi.to_base(alphabet: [alphabet]) : [alphabet] where runs : []

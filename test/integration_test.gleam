@@ -1708,6 +1708,158 @@ pub fn go_swapped() -> Nil {
   support.cleanup(root)
 }
 
+// A running fallback beside a bounded declaration: the declared term is read
+// with each variable renamed to the parameters that bind it, and the line's
+// own bindings follow the same rename.
+fn fallback_answers(
+  root: String,
+  ext_body: String,
+  spec: String,
+) -> List(#(String, String)) {
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #("proj.graded", spec <> "assume app.disk : [Disk]\n"),
+    #("ext.gleam", "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
+" <> ext_body <> "
+}
+"),
+    #(
+      "app.gleam",
+      "import ext
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+fn invoke(
+  op: fn(fn() -> Nil, fn() -> Nil) -> Nil,
+  x: fn() -> Nil,
+  y: fn() -> Nil,
+) -> Nil {
+  op(x, y)
+}
+
+pub fn go() -> Nil {
+  ext.run(disk, pure_cb)
+}
+
+pub fn go_swapped() -> Nil {
+  ext.run(pure_cb, disk)
+}
+
+pub fn go_value() -> Nil {
+  invoke(ext.run, disk, pure_cb)
+}
+
+pub fn go_value_swapped() -> Nil {
+  invoke(ext.run, pure_cb, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(lines) = graded.inferred_lines(root)
+  support.cleanup(root)
+  ["go", "go_swapped", "go_value", "go_value_swapped"]
+  |> list.map(fn(function) {
+    let prefix = "effects app." <> function <> " : "
+    let assert Ok(line) = list.find(lines, string.starts_with(_, prefix))
+    #(function, string.drop_start(line, string.length(prefix)))
+  })
+}
+
+pub fn a_variable_two_fallback_callbacks_share_charges_both_test() {
+  fallback_answers(
+    "build/external_fallback_shared_bound",
+    "  f()\n  g()",
+    "assume ext.run(f: [e], g: [e]) : [e]\n",
+  )
+  |> should.equal([
+    #("go", "[Disk]"),
+    #("go_swapped", "[Disk]"),
+    #("go_value", "[Disk]"),
+    #("go_value_swapped", "[Disk]"),
+  ])
+}
+
+pub fn a_crossed_bound_binds_the_callback_its_line_names_test() {
+  // `g` names the first callback's cost and `f` the second's; the body calls
+  // only the first.
+  fallback_answers(
+    "build/external_fallback_crossed_bound",
+    "  f()",
+    "assume ext.run(f: [g], g: [f]) : [g]\n",
+  )
+  |> should.equal([
+    #("go", "[Disk]"),
+    #("go_swapped", "[]"),
+    #("go_value", "[Disk]"),
+    #("go_value_swapped", "[]"),
+  ])
+}
+
+pub fn a_forwarded_callback_returning_a_function_reads_its_result_unknown_test() {
+  // `keep` declares nothing about the callback it is handed, so what calling
+  // `first` returns may run too: a function, here, which no type proves holds
+  // nothing.
+  let root = "build/external_fallback_callback_returning_a_function"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #("proj.graded", "assume ext : []\nassume app.disk : [Disk]\n"),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(first, second) -> Nil {
+  keep(first)
+  second()
+}
+
+fn keep(f: fn() -> fn() -> Nil) -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+fn make_pure() -> fn() -> Nil {
+  pure_cb
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+fn invoke(
+  op: fn(fn() -> fn() -> Nil, fn() -> Nil) -> Nil,
+  x: fn() -> fn() -> Nil,
+  y: fn() -> Nil,
+) -> Nil {
+  op(x, y)
+}
+
+pub fn go() -> Nil {
+  invoke(ext.run, make_pure, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(lines) = graded.inferred_lines(root)
+  support.cleanup(root)
+  lines
+  |> list.filter(string.starts_with(_, "effects app.go "))
+  |> should.equal(["effects app.go : [Disk, Unknown]"])
+}
+
 pub fn a_labeled_fallback_callback_lifts_under_its_bound_name_test() {
   // `run`'s callback parameter is labeled (`with action:`), and the settled
   // fallback term is stated over the in-body name `action` — the name the
@@ -2265,6 +2417,7 @@ pub fn fallback_disk() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
   violation.function |> should.equal("fallback_disk")
+  // `other`, the callback the line does not bound, may be called.
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
   violation.explanation.fallback
@@ -3000,6 +3153,7 @@ pub fn via_poly() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   [
+    // `other`, the callback the line does not bound, may be called.
     #("via_ground", ["Disk", "Time"]),
     #("via_poly", ["Disk", "Time"]),
   ]
@@ -3907,9 +4061,10 @@ pub fn foreign_value_channels_are_opaque_test() {
   r.violations
   |> list.map(fn(v) { v.function })
   |> list.sort(string.compare)
+  // `calls_updated_field`'s field call also runs the value it is handed.
   |> should.equal([
     "calls_built_field", "calls_partial_operator", "calls_returned_operator",
-    "calls_updated_field", "calls_via_provenance",
+    "calls_updated_field", "calls_updated_field", "calls_via_provenance",
   ])
   r.violations
   |> list.map(fn(v) { #(v.function, v.explanation.actual) })
@@ -3921,6 +4076,7 @@ pub fn foreign_value_channels_are_opaque_test() {
       types.Specific(set.from_list(["Disk", "Unknown"])),
     ),
     #("calls_returned_operator", types.Specific(set.from_list(["Unknown"]))),
+    #("calls_updated_field", types.Specific(set.from_list(["Disk", "Unknown"]))),
     #("calls_updated_field", types.Specific(set.from_list(["Unknown"]))),
     #("calls_via_provenance", types.Specific(set.from_list(["Unknown"]))),
   ])
@@ -7035,7 +7191,7 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
     "factory_forward",
     support.knowledge_base(),
     [],
-    signatures.from_glance_module("factory_forward", module),
+    with_dependencies(signatures.from_glance_module("factory_forward", module)),
     typeinfo.no_reading(),
     types.all_targets(),
   ))
@@ -8493,6 +8649,8 @@ pub fn a_declared_clause_binds_a_labelled_argument_by_signature_test() {
   |> should.equal([
     #("run_named", types.Specific(set.from_list(["Stdout"]))),
     #("run_reordered", types.Specific(set.from_list(["Stdout"]))),
+    // A callback the line does not bound may be called.
+    #("run_reversed", types.Specific(set.from_list(["Stdout"]))),
   ])
 }
 
@@ -8557,6 +8715,8 @@ pub fn run_reordered() -> Nil {
   |> should.equal([
     #("run_named", types.Specific(set.from_list(["Disk"]))),
     #("run_reordered", types.Specific(set.from_list(["Disk"]))),
+    // A callback the line does not bound may be called.
+    #("run_reversed", types.Specific(set.from_list(["Disk"]))),
   ])
   support.cleanup(root)
 }
@@ -9295,7 +9455,9 @@ pub fn girard_types_do_not_replace_a_syntax_proved_target_test() {
     ),
     #("block_alias", "effects block_alias : [Unknown]"),
     #("case_narrowed", "effects case_narrowed : [Unknown]"),
-    #("count", "effects count : []"),
+    // The spec's own `assume gleam/list : []` follows the written default:
+    // with no types, what `xs` carries is unknown.
+    #("count", "effects count : [Unknown]"),
     #("direct_construction", "effects direct_construction : [Net]"),
     #("let_assert_narrowed", "effects let_assert_narrowed : [Unknown]"),
     #("rebound_after_narrowing", "effects rebound_after_narrowing : [Net]"),
@@ -9385,7 +9547,7 @@ pub fn dropped(io: Logger) -> Nil {
 "
 
 fn dropped_definition_project() -> String {
-  support.write_fixture("build/dropped_definition_shadow", [
+  fixture_with_stdlib("build/dropped_definition_shadow", [
     #("gleam.toml", "name = \"app\"\n"),
     #("manifest.toml", stdlib_manifest),
     #("m.gleam", dropped_definition_source),
@@ -9440,7 +9602,7 @@ pub fn a_gated_definitions_why_names_the_inference_test() {
 
 pub fn a_gated_definitions_check_passes_on_its_own_targets_reading_test() {
   let root =
-    support.write_fixture("build/dropped_definition_shadow_check", [
+    fixture_with_stdlib("build/dropped_definition_shadow_check", [
       #("gleam.toml", "name = \"app\"\n"),
       #("manifest.toml", stdlib_manifest),
       #("app.graded", "check m.dropped : [Stdout]\n"),
@@ -9458,7 +9620,7 @@ pub fn a_mirrored_gated_definition_reads_on_the_erlang_run_test() {
   // holds the same shadowed call. The primary run is JavaScript and the second
   // is Erlang, and the charge is the module's either way.
   let root =
-    support.write_fixture("build/gated_definition_mirror", [
+    fixture_with_stdlib("build/gated_definition_mirror", [
       #("gleam.toml", "name = \"app\"\ntarget = \"javascript\"\n"),
       #("manifest.toml", stdlib_manifest),
       #(
@@ -9592,7 +9754,7 @@ pub fn an_untyped_shadowed_call_says_why_it_charged_unknown_test() {
         ),
       ],
       knowledge_base,
-      signatures.from_glance_module("shadow_receiver", module),
+      with_dependencies(signatures.from_glance_module("shadow_receiver", module)),
       typeinfo.no_reading(),
       types.all_targets(),
     )
@@ -9609,7 +9771,7 @@ pub fn an_untyped_shadowed_call_says_why_it_charged_unknown_test() {
       "logger_call_result",
       [[]],
       knowledge_base,
-      signatures.from_glance_module("shadow_receiver", module),
+      with_dependencies(signatures.from_glance_module("shadow_receiver", module)),
       typeinfo.no_reading(),
       types.all_targets(),
     )
@@ -9687,7 +9849,7 @@ fn infer_fixture(
     module_path,
     knowledge_base,
     [],
-    signatures.from_glance_module(module_path, module),
+    with_dependencies(signatures.from_glance_module(module_path, module)),
     reading,
     types.all_targets(),
   )
@@ -10236,7 +10398,11 @@ fn unreadable_path_dep_spec_answer(
     graded.run_effect_formatted(app_root, "dep.noop", graded.Prose),
     effects.describe_dep_spec_load(
       "dep",
-      effects.load_dep_spec_at(dep_root, dep_root <> "/dep.graded"),
+      effects.load_dep_spec_at(
+        dep_root,
+        dep_root <> "/dep.graded",
+        effects.trusting_reading(),
+      ),
     ),
   )
 }
@@ -12601,12 +12767,15 @@ pub fn a_vendored_forks_clause_binds_over_the_catalogued_name_test() {
   returned_call_effects(violations)
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
   // And the producer's own call charges what the fork's blanket says, not the
-  // `[Environment]` the catalog keys `envoy.get` with: an empty charge is
-  // within the consumer's `[]` budget, so it raises no violation at all.
-  list.any(violations, fn(violation) {
-    violation.explanation.call.module == "envoy"
+  // `[Environment]` the catalog keys `envoy.get` with, beside the callback
+  // the blanket does not bound, which it may call.
+  list.filter_map(violations, fn(violation) {
+    case violation.explanation.call.module {
+      "envoy" -> Ok(violation.explanation.actual)
+      _ -> Error(Nil)
+    }
   })
-  |> should.be_false()
+  |> should.equal([types.Specific(set.from_list(["Stdout"]))])
 }
 
 // A manifest naming a package the bundled catalog covers, and one naming none.
@@ -13474,7 +13643,7 @@ fn owned_spec_run(
   let under = fn(prefix, files: List(#(String, String))) {
     list.map(files, fn(entry) { #(prefix <> entry.0, entry.1) })
   }
-  support.write_fixture(
+  fixture_with_stdlib(
     root,
     list.flatten([
       [
@@ -13498,7 +13667,11 @@ fn owned_spec_run(
   let warnings =
     effects.describe_dep_spec_load(
       "dep",
-      effects.load_dep_spec(root <> "/" <> dep, "dep"),
+      effects.load_dep_spec(
+        root <> "/" <> dep,
+        "dep",
+        effects.trusting_reading(),
+      ),
     )
   support.cleanup(root)
   OwnedRun(charged:, answers:, warnings:)
@@ -16203,8 +16376,11 @@ pub fn tick() -> Nil {
   |> list.each(fn(function) {
     let assert Ok(violation) =
       list.find(r.violations, fn(v) { v.function == function })
-    violation.explanation.actual
-    |> should.equal(types.Specific(set.from_list(["Disk", "Time", "Unknown"])))
+    #(function, violation.explanation.actual)
+    |> should.equal(#(
+      function,
+      types.Specific(set.from_list(["Disk", "Time", "Unknown"])),
+    ))
   })
   let assert Ok(direct) =
     list.find(r.violations, fn(v) { v.function == "direct" })
@@ -16556,8 +16732,11 @@ pub fn tick() -> Nil {
   |> list.each(fn(function) {
     let assert Ok(violation) =
       list.find(r.violations, fn(v) { v.function == function })
-    violation.explanation.actual
-    |> should.equal(types.Specific(set.from_list(["Disk", "Time", "Unknown"])))
+    #(function, violation.explanation.actual)
+    |> should.equal(#(
+      function,
+      types.Specific(set.from_list(["Disk", "Time", "Unknown"])),
+    ))
   })
   support.cleanup(root)
 }
@@ -16749,7 +16928,7 @@ fn shadow_effect_line(
   function: String,
 ) -> String {
   let root =
-    support.write_fixture("build/" <> name, [
+    fixture_with_stdlib("build/" <> name, [
       #("gleam.toml", "name = \"proj\"\n"),
       #("manifest.toml", stdlib_manifest),
       #("ext.gleam", source),
@@ -16789,7 +16968,7 @@ pub fn a_shadowed_receiver_of_an_imported_type_reads_as_the_module_test() {
   // `import model.{type Runner}` writes the type unqualified here, but the
   // index entry is keyed by the module that declares it.
   let root =
-    support.write_fixture("build/shadow_imported_type", [
+    fixture_with_stdlib("build/shadow_imported_type", [
       #("gleam.toml", "name = \"proj\"\n"),
       #("manifest.toml", stdlib_manifest),
       #("model.gleam", "pub type Runner {\n  Runner(n: Int)\n}\n"),
@@ -16924,7 +17103,7 @@ pub fn a_shadowed_receiver_in_a_fallback_body_reads_as_the_module_test() {
   // A fallback body is walked through `walk_fallbacks`, which builds its own
   // module context — the accessor index has to reach that path too.
   let root =
-    support.write_fixture("build/shadow_fallback", [
+    fixture_with_stdlib("build/shadow_fallback", [
       #("gleam.toml", support.dual_target_toml("proj")),
       #("manifest.toml", stdlib_manifest),
       #(
@@ -17000,14 +17179,14 @@ const consumer_only_package =
 // The consumer and the path dependency it declares, materialised together.
 fn typed_path_dep_fixture() -> #(String, String) {
   let dep_root =
-    support.write_fixture("build/typed_path_dep_dep", [
+    fixture_with_stdlib("build/typed_path_dep_dep", [
       #("gleam.toml", "name = \"dep\"\n"),
       #("manifest.toml", stdlib_manifest),
       #("src/dep.gleam", typed_path_dep_source),
       #("src/dep/request.gleam", typed_path_dep_request),
     ])
   let app_root =
-    support.write_fixture("build/typed_path_dep_app", [
+    fixture_with_stdlib("build/typed_path_dep_app", [
       #(
         "gleam.toml",
         "name = \"app\"\n\n[dependencies]\ndep = { path = \"../typed_path_dep_dep\" }\n",
@@ -17077,14 +17256,14 @@ pub fn path(request: Request, suffix: String) -> String {
 
 fn gated_path_dep_fixture() -> #(String, String) {
   let dep_root =
-    support.write_fixture("build/gated_path_dep_dep", [
+    fixture_with_stdlib("build/gated_path_dep_dep", [
       #("gleam.toml", "name = \"dep\"\n"),
       #("manifest.toml", stdlib_manifest),
       #("src/dep.gleam", gated_path_dep_source),
       #("src/dep/request.gleam", gated_path_dep_request),
     ])
   let app_root =
-    support.write_fixture("build/gated_path_dep_app", [
+    fixture_with_stdlib("build/gated_path_dep_app", [
       #(
         "gleam.toml",
         "name = \"app\"\n\n[dependencies]\ndep = { path = \"../gated_path_dep_dep\" }\n",
@@ -17145,13 +17324,13 @@ pub fn a_typed_path_dependencys_module_call_is_charged_test() {
 // declares, materialised together.
 fn nested_path_dep_fixture() -> #(String, String, String) {
   let inner_root =
-    support.write_fixture("build/nested_path_dep_inner", [
+    fixture_with_stdlib("build/nested_path_dep_inner", [
       #("gleam.toml", "name = \"graded_only_here\"\n"),
       #("manifest.toml", stdlib_manifest),
       #("src/graded_only_here/thing.gleam", consumer_only_package),
     ])
   let dep_root =
-    support.write_fixture("build/nested_path_dep_dep", [
+    fixture_with_stdlib("build/nested_path_dep_dep", [
       #(
         "gleam.toml",
         "name = \"dep\"\n\n[dependencies]\ngraded_only_here = { path = \"../nested_path_dep_inner\" }\n",
@@ -17161,7 +17340,7 @@ fn nested_path_dep_fixture() -> #(String, String, String) {
       #("src/dep/request.gleam", typed_path_dep_request),
     ])
   let app_root =
-    support.write_fixture("build/nested_path_dep_app", [
+    fixture_with_stdlib("build/nested_path_dep_app", [
       #(
         "gleam.toml",
         "name = \"app\"\n\n[dependencies]\ndep = { path = \"../nested_path_dep_dep\" }\n",
@@ -17326,13 +17505,13 @@ pub fn a_path_dependencys_fallback_body_reads_its_shadowed_receiver_test() {
   // and the body would read [Unknown] for a reason that has nothing to do with
   // the receiver.
   let dep_root =
-    support.write_fixture("build/fallback_shadow_dep", [
+    fixture_with_stdlib("build/fallback_shadow_dep", [
       #("gleam.toml", "name = \"dep\"\n"),
       #("src/dep.gleam", fallback_shadow_dep),
       #("src/dep/request.gleam", fallback_shadow_request),
     ])
   let app_root =
-    support.write_fixture("build/fallback_shadow_app", [
+    fixture_with_stdlib("build/fallback_shadow_app", [
       #(
         "gleam.toml",
         "name = \"app\"\n\n[dependencies]\ndep = { path = \"../fallback_shadow_dep\" }\n",
@@ -17369,7 +17548,7 @@ pub fn handle(io: Thing) -> Nil {
 
 pub fn an_installed_dependencys_fallback_body_reads_its_shadowed_receiver_test() {
   let app_root =
-    support.write_fixture("build/fallback_shadow_installed_app", [
+    fixture_with_stdlib("build/fallback_shadow_installed_app", [
       #("gleam.toml", "name = \"app\"\n"),
       #("manifest.toml", stdlib_manifest),
       #("src/app.gleam", "import dep\n\npub fn caller() -> Nil {\n  Nil\n}\n"),
@@ -17393,12 +17572,12 @@ fn path_dep_effect_line(
   function: String,
 ) -> String {
   let #(app_root, dep_root) = path_dep_roots(name)
-  support.write_fixture(dep_root, [
+  fixture_with_stdlib(dep_root, [
     #("gleam.toml", "name = \"dep\"\n"),
     #("src/dep.gleam", dep_source),
   ])
   let _ = simplifile.write(dep_root <> "/manifest.toml", stdlib_manifest)
-  support.write_fixture(app_root, [
+  fixture_with_stdlib(app_root, [
     #(
       "gleam.toml",
       "name = \"app\"\n\n[dependencies]\ndep = { path = \"../"
@@ -18478,7 +18657,7 @@ pub fn a_discarded_callback_binds_a_callers_parameter_test() {
 // its body.
 pub fn a_discarded_callback_takes_a_binder_only_where_it_is_supplied_test() {
   let root = "build/discarded_callback_supplied"
-  support.write_fixture(root, [
+  fixture_with_stdlib(root, [
     #("gleam.toml", "name = \"proj\"\n"),
     #("manifest.toml", stdlib_manifest),
     #("proj.graded", ""),
@@ -18583,8 +18762,29 @@ pub fn go_generic_other() -> Nil {
     "effects box.go_updated : [Stdout]",
     "effects box.go_updated_run : [Stdout]",
     "effects box.go_updated_param : [Stdout]",
-    "effects generic.go_generic : [Stdout]",
-    "effects generic.go_generic_other : [Stdout]",
+    // `run_generic` hands its operator a generic value, which may hold a
+    // function nothing describes.
+    "effects generic.go_generic : [Stdout, Unknown]",
+    "effects generic.go_generic_other : [Stdout, Unknown]",
   ])
   support.cleanup(root)
+}
+
+// A fixture whose manifest names the standard library, with its source
+// installed beside it.
+fn fixture_with_stdlib(
+  directory: String,
+  files: List(#(String, String)),
+) -> String {
+  let root = support.write_fixture(directory, files)
+  support.install_stdlib(root)
+  root
+}
+
+// A registry beside the signatures of the catalogued packages graded installs,
+// as a run reads a project's dependencies.
+fn with_dependencies(
+  registry: signatures.SignatureRegistry,
+) -> signatures.SignatureRegistry {
+  signatures.merge(support.dependency_registry(), registry)
 }

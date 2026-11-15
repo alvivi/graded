@@ -132,7 +132,7 @@ fn parse_covered(line: String, coverage: Coverage) -> Result(AuditEntry, Nil) {
   case line {
     "contract " <> statement -> {
       use file <- result.try(
-        annotation.parse_file_with("assume " <> statement, types.Active)
+        annotation.parse_file("assume " <> statement)
         |> result.replace_error(Nil),
       )
       case file.lines {
@@ -157,9 +157,8 @@ fn parse_covered(line: String, coverage: Coverage) -> Result(AuditEntry, Nil) {
       use #(path, term) <- result.try(string.split_once(rest, " : "))
       use #(module, function) <- result.try(split_path(path))
       use file <- result.try(
-        annotation.parse_file_with(
+        annotation.parse_file(
           "assume " <> module <> "." <> function <> " : " <> term,
-          types.Active,
         )
         |> result.replace_error(Nil),
       )

@@ -203,19 +203,6 @@ pub fn is_wholly_unknown(effect_set: EffectSet) -> Bool {
   }
 }
 
-// Latent-effect reading
-//
-// Whether specs, catalogs and call sites are read under the latent-effect
-// rules. Chosen once per run, before anything is parsed, and carried by every
-// reader and knowledge base the run builds.
-
-pub type LatMode {
-  // Every reader behaves as it did before the latent-effect rules.
-  Inactive
-  // The latent-effect rules are read.
-  Active
-}
-
 // Effect terms
 //
 // The lambda-calculus-with-union form of effects, whose ground normal form is
@@ -623,10 +610,11 @@ pub type ArgumentValue {
   // A qualified function reference, e.g. `io.println` or `types.OutOfRange`.
   // Effects are looked up in the knowledge base.
   FunctionRef(name: QualifiedName)
-  // A bare identifier — a local function, a parameter, or an unbound
-  // local variable. Resolved against the caller's param bounds or
-  // local function map.
-  LocalRef(name: String)
+  // A bare identifier: a parameter, or a name no binding covers. `scope` is what
+  // the name referred to where it is written, so a reader answers it from the
+  // binder it named there — a parameter's bound only for that very parameter, the
+  // module's own functions only for a name no binding covered.
+  LocalRef(name: String, scope: LocalScope)
   // A record constructor (uppercase-initial qualified or bare name).
   // Pure by Gleam's semantics.
   ConstructorRef
@@ -635,15 +623,10 @@ pub type ArgumentValue {
   // parameter, the checker analyses the body — treating the first parameter as
   // the callback — and lifts it to an effect operator so the application
   // beta-reduces (rather than collapsing to `[Unknown]`). `captures` are the
-  // callable bindings in scope at the closure's creation site (`let suffix =
-  // string.append`), so re-analysing the body resolves a captured name to its
-  // effect instead of `[Unknown]` — the binding-site lexical environment, kept
-  // only for the callables the body could invoke.
-  Closure(
-    params: List(String),
-    captures: List(#(String, ArgumentValue)),
-    body: List(Statement),
-  )
+  // bindings the body names, each as it stood at the closure's creation site
+  // (`let suffix = string.append`), so re-analysing the body resolves a captured
+  // name to what it denoted there instead of `[Unknown]`.
+  Closure(params: List(String), captures: List(Captured), body: List(Statement))
   // A value selected among several liftable options by a `case`/`if`
   // (`case c { True -> f  False -> g }`). When passed to an operator parameter,
   // each option is lifted and the results are joined (`(f ⊔ g)(cb) = f(cb) ⊔
@@ -660,9 +643,9 @@ pub type ArgumentValue {
   // A function capture `f(a, _, c)`: a function of one parameter that calls
   // `target` with `arguments` and its own parameter at `hole` (under `label`
   // where the hole is labelled). Each application evaluates the fixed argument
-  // expressions, `evaluated`, again, with `captures` the callable bindings in
-  // scope where the capture is written. Read only under the latent-effect
-  // rules; every other reader takes it as `OtherExpression`.
+  // expressions, `evaluated`, again, with `captures` the bindings those
+  // expressions name, as they stood where the capture is written. The latent-effect rules read it; every
+  // other reader takes it as `OtherExpression`.
   Capture(
     span: Span,
     target: ArgumentValue,
@@ -670,7 +653,7 @@ pub type ArgumentValue {
     label: Option(String),
     arguments: List(CallArgument),
     evaluated: List(Expression),
-    captures: List(#(String, ArgumentValue)),
+    captures: List(Captured),
   )
   // A value produced by *calling* a function that returns a function
   // (`let h = pick_handler()`). `callee` names the producer; a `""` module is
@@ -686,9 +669,10 @@ pub type ArgumentValue {
   // can be re-keyed onto it when the root is one of the caller's parameters.
   // Treated as opaque (`[Unknown]`) everywhere except call-site field forwarding.
   //
+  // `root` is what the path's first segment referred to where it is written.
   // `wired` is the value extraction traced the path to, where the root is a
   // let-bound construction or update whose field the path selects.
-  ReceiverPath(path: String, wired: Option(ArgumentValue))
+  ReceiverPath(path: String, root: LocalScope, wired: Option(ArgumentValue))
   // An inline constructor or factory call passed as an argument
   // (`inner(Options(resolver: resolver))` / `inner(make_options(resolver))`).
   // `fields` maps each constructor field label to the argument value wired into
@@ -814,18 +798,29 @@ pub type LocalCall {
   LocalCall(function: String, span: Span, scope: LocalScope)
 }
 
-// What an unqualified call's name refers to at the point it is called.
+// What an unqualified name refers to where it is written, decided there and
+// carried with the reference.
 //
 // The name alone does not say: a parameter or local named like a sibling
-// function shadows it, and a reader that matches the module's own definitions
-// by name attributes the call to code the body never reaches.
+// function shadows it, a later binding of the same name shadows an earlier one,
+// and a reader that matches by name where the reference is read attributes it to
+// a binding the code never reaches.
 pub type LocalScope {
-  // A binding in scope at the call — a parameter, a `let`, or a value that
-  // reached the callee position through one. It names that binding and nothing
-  // the module defines.
-  LexicalBinding
+  // A binding in scope where the name is written — a parameter, a `let`, a
+  // pattern variable, or a value that reached the callee position through one.
+  // `binder` is the offset where that binding is introduced: a function's start
+  // for its parameters, a closure body's start for the closure's, a pattern
+  // variable's own. Distinct bindings of one spelling have distinct binders, so
+  // a table keyed by spelling answers only for the binder it was built for.
+  LexicalBinding(binder: Int)
   // No binding covers the name, so the module's own definitions answer for it.
   ModuleDefinition
+}
+
+// A name a closure or capture body reads from the scope it was written in: the
+// value a reference to it denoted there, and the offset of its binder.
+pub type Captured {
+  Captured(name: String, binder: Int, value: ArgumentValue)
 }
 
 // A field access call: object.label(args) where object is a local variable.
@@ -999,7 +994,7 @@ pub type DirectOperatorCall {
 pub type DirectClosureCall {
   DirectClosureCall(
     params: List(String),
-    captures: List(#(String, ArgumentValue)),
+    captures: List(Captured),
     body: List(Statement),
     span: Span,
   )
@@ -1015,7 +1010,7 @@ pub type DirectClosureCall {
 pub type DirectPipeOp {
   DirectPipeOp(
     params: List(String),
-    captures: List(#(String, ArgumentValue)),
+    captures: List(Captured),
     body: List(Statement),
     span: Span,
   )

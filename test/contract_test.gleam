@@ -67,7 +67,7 @@ fn run_registry() -> signatures.SignatureRegistry {
 
 fn assume(line: String) -> types.AssumeAnnotation {
   let assert Ok(types.GradedFile(lines: [types.AssumeLine(assume, _)])) =
-    annotation.parse_file_with(line, types.Active)
+    annotation.parse_file(line)
   assume
 }
 

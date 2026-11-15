@@ -5,3 +5,9 @@ assume gleam/http/cookie : []
 assume gleam/http/request : []
 assume gleam/http/response : []
 assume gleam/http/service : []
+
+// gleam_http — what the reviewed functions do with the functions they are given
+assume gleam/http/request.map(request: [request], transform: [transform]) : [transform] where runs : [], relay : transform(request)
+assume gleam/http/response.map(response: [response], transform: [transform]) : [transform] where runs : [], relay : transform(response)
+assume gleam/http/response.try_map(response: [response], transform: [transform]) : [transform] where runs : [], relay : transform(response)
+assume gleam/http/service.map_response_body(mapper: [mapper]) : [mapper] where runs : []

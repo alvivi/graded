@@ -11,8 +11,8 @@ assume lustre/component : []
 assume lustre/dev/query : []
 
 // lustre — effectful runtime functions
-assume lustre.start : [Process, Dom]
-assume lustre.start_server_component : [Process]
+assume lustre.start(app: [a]) : [Process, Dom] where runs : [a]
+assume lustre.start_server_component(app: [a]) : [Process] where runs : [a]
 assume lustre.send : [Process]
 assume lustre.shutdown : [Process]
 assume lustre.register : [Dom]
@@ -28,3 +28,19 @@ assume lustre/server_component.deregister_subject : [Process]
 assume lustre/server_component.register_callback : [Process]
 assume lustre/server_component.deregister_callback : [Process]
 assume lustre/server_component.emit : [Dom]
+
+// lustre — what the reviewed functions do with the functions they are given
+assume lustre/attribute.map(attr: [attr], f: [f]) : [f] where runs : [], relay : f(attr)
+assume lustre/effect.from(effect: [effect]) : [effect([])] where carries : [effect([])]
+assume lustre/effect.map(effect: [effect], f: [f]) : [f] where runs : [], relay : f(effect)
+assume lustre/effect.perform(effect: [effect]) : [] where runs : [effect]
+assume lustre/element.map(element: [element], f: [f]) : [f] where runs : [], relay : f(element)
+assume lustre/element.to_document_string(el: [el]) : [] where runs : [el]
+assume lustre/element.to_document_string_builder(el: [el]) : [] where runs : [el]
+assume lustre/element.to_string(element: [element]) : [] where runs : [element]
+assume lustre/element.to_string_builder(element: [element]) : [] where runs : [element]
+assume lustre/event.on_check(msg: [msg]) : [msg] where runs : []
+assume lustre/event.on_input(msg: [msg]) : [msg] where runs : []
+assume lustre/event.on_keydown(msg: [msg]) : [msg] where runs : []
+assume lustre/event.on_keypress(msg: [msg]) : [msg] where runs : []
+assume lustre/event.on_keyup(msg: [msg]) : [msg] where runs : []

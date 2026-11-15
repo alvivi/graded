@@ -1,6 +1,6 @@
 // gleam_erlang — process and system functions
 
-assume gleam/erlang/process.send : [Process]
+assume gleam/erlang/process.send(message: [message]) : [Process] where runs : [message]
 assume gleam/erlang/process.start : [Process]
 assume gleam/erlang/process.sleep : [Process]
 assume gleam/erlang/process.sleep_forever : [Process]

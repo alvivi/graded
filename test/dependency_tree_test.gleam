@@ -817,6 +817,131 @@ const justin_ext =
 const justin_ext_with_body =
   "@external(erlang, \"justin_ffi\", \"ext\")\npub fn ext() -> Nil {\n  sink()\n}\n\n@external(erlang, \"justin_ffi\", \"sink\")\n@external(javascript, \"./justin_ffi.mjs\", \"sink\")\nfn sink() -> Nil\n"
 
+// A newly loaded package's written lines keep what they say about function
+// values: the same answers whether the root reaches `b` through `a` or names
+// it directly.
+
+const contract_b_source =
+  "@external(erlang, \"b_ffi\", \"make\")
+pub fn make() -> List(fn() -> Nil)
+
+@external(erlang, \"b_ffi\", \"make_fn\")
+pub fn make_fn() -> fn() -> Nil
+
+@external(erlang, \"b_ffi\", \"each\")
+pub fn each(xs: List(a), f: fn(a) -> Nil) -> Nil
+
+@external(erlang, \"b_ffi\", \"store\")
+pub fn store(x: List(fn() -> Nil)) -> Nil
+
+@external(erlang, \"b_ffi\", \"run_any\")
+pub fn run_any(x: a) -> Nil
+
+@external(erlang, \"b_ffi\", \"loud\")
+pub fn loud() -> Nil
+"
+
+const contract_b_spec =
+  "assume b.make : [] where carries : [Stdout]
+assume b.make_fn : [] where carries : [Stdout]
+assume b.each(xs: [x], f: [f]) : [f] where runs : [], relay : f(x)
+assume b.store(x: [x]) : [] where runs : []
+assume b.run_any : []
+assume b.loud : [Stdout]
+"
+
+const contract_app_source =
+  "import b
+
+pub fn carried() -> Nil {
+  b.each(b.make(), fn(f) { f() })
+}
+
+pub fn relayed() -> Nil {
+  b.each([b.loud], fn(f) { f() })
+}
+
+pub fn stored() -> Nil {
+  b.store([b.loud])
+}
+
+pub fn activated() -> Nil {
+  b.run_any(b.make_fn())
+}
+
+pub fn applied() -> Nil {
+  let f = b.make_fn()
+  f()
+}
+"
+
+// Each of `functions`' answers, with `b` reached through `a` and with the root
+// naming it as a path dependency of its own.
+fn contract_answers(
+  app_spec: String,
+  functions: List(String),
+) -> #(List(String), List(String)) {
+  let answers = fn(direct) {
+    let root =
+      tree_with_sources("transitive_path", [
+        #("app", [
+          #("src/app.gleam", contract_app_source),
+          #("app.graded", app_spec),
+        ]),
+        #("b", [
+          #("src/b.gleam", contract_b_source),
+          #("b.graded", contract_b_spec),
+        ]),
+      ])
+    case direct {
+      True -> {
+        support.edit_file(
+          root <> "/gleam.toml",
+          "a = { path = \"../a\" }",
+          "a = { path = \"../a\" }\nb = { path = \"../b\" }",
+        )
+        support.edit_file(
+          root <> "/manifest.toml",
+          "a = { path = \"../a\" }",
+          "a = { path = \"../a\" }\nb = { path = \"../b\" }",
+        )
+      }
+      False -> Nil
+    }
+    let assert Ok(lines) = graded.inferred_lines(root)
+    support.cleanup(root <> "/..")
+    list.map(functions, fn(function) {
+      let prefix = "effects app." <> function <> " : "
+      let assert Ok(line) = list.find(lines, string.starts_with(_, prefix))
+      function <> " " <> string.drop_start(line, string.length(prefix))
+    })
+  }
+  #(answers(False), answers(True))
+}
+
+pub fn a_newly_loaded_package_keeps_its_lines_contracts_test() {
+  let expected = [
+    "carried [Stdout]", "relayed [Stdout]", "stored []", "activated [Stdout]",
+  ]
+  contract_answers("", ["carried", "relayed", "stored", "activated"])
+  |> should.equal(#(expected, expected))
+}
+
+pub fn a_baseline_result_declaration_keeps_answering_test() {
+  let expected = ["carried [Http]"]
+  contract_answers("assume b.make : [] where carries : [Http]\n", ["carried"])
+  |> should.equal(#(expected, expected))
+}
+
+pub fn a_returned_operator_and_a_carried_result_coexist_test() {
+  let expected = ["activated [Stdout]", "applied [Http]"]
+  contract_answers("assume b.make_fn where returns : [Http]\n", [
+    "activated",
+    "applied",
+  ])
+  |> should.equal(#(expected, expected))
+}
+
 pub fn a_packages_own_declaration_over_its_external_answers_test() {
   justin_answer(
     [
@@ -915,22 +1040,21 @@ fn justin_route_answer(app_source: String) -> String {
 }
 
 pub fn a_signature_route_leaving_a_callback_unbound_keeps_its_answer_test() {
-  // `apply2`'s source declares no label `f`, so read through its signature
-  // the callback binds to nothing; read by label against the bound it binds.
+  // `apply2`'s source declares no parameter `f`, so the written bound is of
+  // unknown kind and promises nothing: what it binds reads `[Unknown]`
+  // whichever route reads the call.
   justin_route_answer("pub fn go() -> Nil {\n  justin.apply2(1, f: say)\n}\n")
-  |> should.equal("effects app.go : [Stdout]")
+  |> should.equal("effects app.go : [Stdout, Unknown]")
 }
 
 pub fn a_mixed_site_keeps_the_callback_charge_and_reverts_the_route_test() {
-  // Without the package, `apply` is the catalog's boundless `[]` and charges
-  // `helper` nothing: `[]`. With it, `helper` is charged as `apply`'s
-  // callback — `[Stdout]` — and the route inside `helper` that would leave
-  // its own callback unbound is reverted, rather than answering
-  // `[Stdout, Unknown]`.
+  // With the package, `helper` is charged as `apply`'s callback, `[Stdout]`.
+  // Inside `helper`, `apply2`'s written bound names no parameter its source
+  // declares, so it is of unknown kind and reads `[Unknown]` on every route.
   justin_route_answer(
     "fn quiet() -> Nil {\n  Nil\n}\n\nfn helper() -> Nil {\n  say()\n  justin.apply2(1, f: quiet)\n}\n\npub fn go() -> Nil {\n  justin.apply(helper)\n}\n",
   )
-  |> should.equal("effects app.go : [Stdout]")
+  |> should.equal("effects app.go : [Stdout, Unknown]")
 }
 
 pub fn receiver_routes_are_equal_or_more_precise_test() {
