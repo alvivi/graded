@@ -29,7 +29,7 @@ is per-clone, so the `git config` line above is needed once after cloning.
 
 ## Pre-flight checklist
 
-CI runs five gates, in this order. Run them locally before pushing — green here
+CI runs six gates, in this order. Run them locally before pushing — green here
 means green on CI:
 
 ```sh
@@ -38,19 +38,27 @@ gleam build --warnings-as-errors      # no warnings allowed
 gleam test                            # full suite
 gleam run -m glinter                  # lint (warnings are errors)
 gleam run -m check_public_interface   # public API names no internal type
+gleam run -m effect_validation -- --seed 1 --cases 40   # answers vs. real runs
 ```
 
 `gleam format src/ test/` (no `--check`) fixes formatting in place. Lint rules and
 the `warnings_as_errors` setting live under `[tools.glinter]` in `gleam.toml`.
 
-The last gate asks the compiler for the package interface and fails if anything
-a consumer can name — a parameter, a return type, a variant field — resolves to
-a `graded/internal` module. It lives in
+The public-interface gate asks the compiler for the package interface and fails
+if anything a consumer can name — a parameter, a return type, a variant field —
+resolves to a `graded/internal` module. It lives in
 [`test/check_public_interface.gleam`](test/check_public_interface.gleam), so it
 never reaches the published package. Reading the compiler's own answer is the
 point: deriving the same thing from source would mean re-implementing
 `@internal`, import-alias resolution and type-alias expansion, and a bug in any
 of those makes the gate pass while the leak ships.
+
+The sixth gate, [`test/effect_validation.gleam`](test/effect_validation.gleam),
+needs Node on the path. It writes generated programs under
+`build/effect_validation/`, runs each one (an Erlang project and a JavaScript
+project), and fails when a function's inferred effects miss an effect its run
+printed. `--graded <dir>` answers with another graded checkout, to compare
+revisions on the same cases.
 
 Everything the public API names is defined in `src/graded.gleam`; a function
 that exists only for graded's own tests is marked `@internal`, which keeps it

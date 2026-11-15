@@ -39,6 +39,10 @@ jobs:
           otp-version: ${{ matrix.erlang }}
           version-type: strict
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Download dependencies
         run: gleam deps download
 
@@ -57,3 +61,6 @@ jobs:
 
       - name: Public API names no internal type
         run: gleam run -m check_public_interface
+
+      - name: Answers contain what generated programs do
+        run: gleam run -m effect_validation -- --seed 1 --cases 40
