@@ -1178,14 +1178,6 @@ pub type CheckFinding {
 
 // A warning surfaced during checking.
 pub type Warning {
-  // A function reference passed as a value whose effects won't be tracked
-  // through the callee.
-  UntrackedEffectWarning(
-    function: String,
-    reference: QualifiedName,
-    span: Span,
-    effects: EffectSet,
-  )
   // A field bound (`check f(recv.field: [..])`) whose `recv.field` path matched
   // no field call in the function's body. Such a bound resolves nothing and is
   // silently dead, so it's flagged. `receiver_is_param` distinguishes the cause:
@@ -1324,8 +1316,7 @@ pub fn warning_function(warning: Warning) -> Result(String, Nil) {
     | UnclosedReturnsClauseWarning(function:, ..)
     | UngroundReturnsClauseWarning(function:, ..)
     | UnboundAssumeTermVariableWarning(function:, ..)
-    | AliasedBoundVariableWarning(function:, ..)
-    | UntrackedEffectWarning(function:, ..) -> Ok(function)
+    | AliasedBoundVariableWarning(function:, ..) -> Ok(function)
     UnmatchedFieldCheckWarning(..)
     | NonCallableFieldCheckWarning(..)
     | UnconstructedFieldCheckWarning(..)

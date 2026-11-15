@@ -663,7 +663,9 @@ pub fn both_pure() -> Nil {
   let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  // `fallback_disk` hands the disk to `other`, which the body calls.
+  // `fallback_disk` hands the disk to `other`, which the body calls and the
+  // line does not bound, so it is also charged as a callback that may be
+  // called.
   r.violations
   |> list.map(fn(violation) {
     #(violation.function, violation.explanation.actual)
@@ -671,6 +673,7 @@ pub fn both_pure() -> Nil {
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
   |> should.equal([
     #("decl_disk", types.Specific(set.from_list(["Disk"]))),
+    #("fallback_disk", types.Specific(set.from_list(["Disk"]))),
     #("fallback_disk", types.Specific(set.from_list(["Disk"]))),
   ])
   support.cleanup(root)
@@ -1518,10 +1521,8 @@ pub fn uses_impure() -> Nil {
   let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
-  let assert [violation] = r.violations
-  violation.function |> should.equal("uses_impure")
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  function_totals(r.violations)
+  |> should.equal([#("uses_impure", types.Specific(set.from_list(["Disk"])))])
   support.cleanup(root)
 }
 
@@ -2039,8 +2040,12 @@ pub fn via_helper() -> Nil {
   |> list.each(fn(function) {
     let assert Ok(violation) =
       list.find(r.violations, fn(v) { v.function == function })
-    violation.explanation.actual
-    |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+    #(
+      function,
+      list.key_find(function_totals(r.violations), function)
+        |> result.unwrap(types.Specific(set.new())),
+    )
+    |> should.equal(#(function, types.Specific(set.from_list(["Disk", "Time"]))))
     violation.explanation.fallback
     |> should.equal(
       types.FallbackCharged(types.Specific(set.from_list(["Disk"]))),
@@ -2210,10 +2215,8 @@ pub fn disk() -> Nil
   let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
-  let assert [violation] = r.violations
-  violation.function |> should.equal("outer")
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  function_totals(r.violations)
+  |> should.equal([#("outer", types.Specific(set.from_list(["Disk", "Time"])))])
   support.cleanup(root)
 }
 
@@ -2256,10 +2259,8 @@ pub fn disk() -> Nil
   let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
-  let assert [violation] = r.violations
-  violation.function |> should.equal("outer")
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  function_totals(r.violations)
+  |> should.equal([#("outer", types.Specific(set.from_list(["Disk"])))])
   support.cleanup(root)
 }
 
@@ -2312,7 +2313,10 @@ pub fn uses() -> Nil {
   |> list.map(fn(violation) {
     #(violation.function, violation.explanation.actual)
   })
-  |> should.equal([#("uses", types.Specific(set.from_list(["Disk"])))])
+  |> should.equal([
+    #("uses", types.Specific(set.from_list(["Disk"]))),
+    #("uses", types.Specific(set.from_list(["Disk"]))),
+  ])
   support.cleanup(root)
 }
 
@@ -2415,11 +2419,13 @@ pub fn fallback_disk() -> Nil {
   let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  let assert [violation] = r.violations
-  violation.function |> should.equal("fallback_disk")
   // `other`, the callback the line does not bound, may be called.
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  function_totals(r.violations)
+  |> should.equal([
+    #("fallback_disk", types.Specific(set.from_list(["Disk", "Time"]))),
+  ])
+  let assert Ok(violation) =
+    list.find(r.violations, fn(v) { v.explanation.call.module == "ext" })
   violation.explanation.fallback
   |> should.equal(
     types.FallbackCharged(types.Specific(set.from_list(["Disk"]))),
@@ -2781,6 +2787,7 @@ pub fn cross_module_value() -> Nil {
       }
     })
     |> list.sort(string.compare)
+    |> list.unique
   charged
   |> should.equal([
     "cross_module_call", "cross_module_value", "same_module_call",
@@ -2850,64 +2857,6 @@ pub fn hands_over_a_called_callback() -> Nil {
     violation.explanation.actual
     |> should.equal(types.Specific(set.from_list(["Disk"])))
   })
-  support.cleanup(root)
-}
-
-pub fn a_bodyless_externals_reference_warns_as_a_summarys_does_test() {
-  // A reference to a var-carrying name warns quoting the set it carries, which
-  // is what a summary-shaped one already did. The widened names inherit it:
-  // the `[Time]`-declared external quotes both halves, and the pure one quotes
-  // its variable alone rather than falling silent.
-  let root = "build/bodyless_external_reference_warning"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "assume ext.loud : [Time]
-assume ext.quiet : []
-check app.loud_go : [_]
-check app.quiet_go : [_]
-",
-    ),
-    #(
-      "ext.gleam",
-      support.foreign_fn("loud", "(action: fn() -> Nil) -> Nil")
-        <> support.foreign_fn("quiet", "(action: fn() -> Nil) -> Nil"),
-    ),
-    #(
-      "app.gleam",
-      "import ext
-
-pub fn apply_callback(f: fn(fn() -> Nil) -> Nil) -> Nil {
-  f(fn() { Nil })
-}
-
-pub fn loud_go() -> Nil {
-  apply_callback(ext.loud)
-}
-
-pub fn quiet_go() -> Nil {
-  apply_callback(ext.quiet)
-}
-",
-    ),
-  ])
-  let assert Ok(results) = graded.check_project(root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  r.warnings
-  |> list.map(fn(warning) {
-    let assert types.UntrackedEffectWarning(function:, effects:, ..) = warning
-    #(function, effects)
-  })
-  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
-  |> should.equal([
-    #(
-      "loud_go",
-      types.Polymorphic(set.from_list(["Time"]), set.from_list(["action"])),
-    ),
-    #("quiet_go", types.Polymorphic(set.new(), set.from_list(["action"]))),
-  ])
   support.cleanup(root)
 }
 
@@ -3159,10 +3108,12 @@ pub fn via_poly() -> Nil {
   ]
   |> list.each(fn(expected) {
     let #(function, actual) = expected
+    list.key_find(function_totals(r.violations), function)
+    |> should.equal(Ok(types.Specific(set.from_list(actual))))
     let assert Ok(violation) =
-      list.find(r.violations, fn(v) { v.function == function })
-    violation.explanation.actual
-    |> should.equal(types.Specific(set.from_list(actual)))
+      list.find(r.violations, fn(v) {
+        v.function == function && v.explanation.call.module != "<passes>"
+      })
     violation.explanation.fallback
     |> should.equal(
       types.FallbackCharged(types.Specific(set.from_list(["Disk"]))),
@@ -4076,7 +4027,7 @@ pub fn foreign_value_channels_are_opaque_test() {
       types.Specific(set.from_list(["Disk", "Unknown"])),
     ),
     #("calls_returned_operator", types.Specific(set.from_list(["Unknown"]))),
-    #("calls_updated_field", types.Specific(set.from_list(["Disk", "Unknown"]))),
+    #("calls_updated_field", types.Specific(set.from_list(["Unknown"]))),
     #("calls_updated_field", types.Specific(set.from_list(["Unknown"]))),
     #("calls_via_provenance", types.Specific(set.from_list(["Unknown"]))),
   ])
@@ -8795,8 +8746,7 @@ pub fn go_operator() -> Nil {
   let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  r.violations
-  |> sorted_verdicts
+  function_totals(r.violations)
   |> should.equal([
     #("go_labelled", types.Specific(set.from_list(["Disk"]))),
     #("go_operator", types.Specific(set.from_list(["Unknown"]))),
@@ -11871,379 +11821,6 @@ pub fn an_external_on_a_function_less_dependency_module_is_flagged_test() {
 // through the same boundary a charge does. Otherwise it would report a
 // reference as carrying effects no caller of the same name is charged.
 
-pub fn a_reference_warning_never_quotes_a_stale_foreign_effect_test() {
-  // A stale `effects` line for an `@external` — what a function that became one
-  // leaves behind. Its callers are charged `[Unknown]`, so a reference to it
-  // must not be reported as carrying the line's `[Disk]`. An unresolved
-  // reference warns about nothing, as it already did.
-  let root = "build/reference_warning_foreign"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "effects ffi.stale : [Disk]\nassume ffi.declared : [Disk]\ncheck app.go : [_]\ncheck app.declared_go : [_]\n",
-    ),
-    #(
-      "ffi.gleam",
-      "@target(erlang)
-@external(erlang, \"proj_ffi\", \"stale\")
-pub fn stale() -> Nil
-
-@target(erlang)
-@external(erlang, \"proj_ffi\", \"declared\")
-pub fn declared() -> Nil
-",
-    ),
-    #(
-      "app.gleam",
-      "import ffi
-
-pub fn apply_callback(f: fn() -> Nil) -> Nil {
-  f()
-}
-
-pub fn go() -> Nil {
-  apply_callback(ffi.stale)
-}
-
-pub fn declared_go() -> Nil {
-  apply_callback(ffi.declared)
-}
-",
-    ),
-  ])
-
-  let assert Ok(results) = graded.check_project(root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  // Only the declared external is quoted, and it is quoted with what declares it.
-  r.warnings
-  |> list.map(fn(warning) {
-    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
-      warning
-    #(function, reference, effects)
-  })
-  |> should.equal([
-    #(
-      "declared_go",
-      types.QualifiedName("ffi", "declared"),
-      types.Specific(set.from_list(["Disk"])),
-    ),
-  ])
-  support.cleanup(root)
-}
-
-pub fn an_undeclared_fallbacks_reference_warns_only_about_what_it_knows_test() {
-  // An undeclared external with a running fallback resolves to that body's
-  // effects unioned with `[Unknown]`, and that answer arrives as a resolved
-  // lookup rather than as the unresolved variant. Reading the variant alone let
-  // `quiet` — whose fallback does nothing, so the whole set is the widening —
-  // warn that ``its effects [Unknown] won't be tracked``, quoting the one thing
-  // an unresolved reference is supposed to stay silent about. `loud`'s set has a
-  // known half, and that half is a real effect travelling past anything that
-  // tracks it, so it still warns.
-  let root = "build/reference_warning_undeclared_fallback"
-  support.write_fixture(root, [
-    #("gleam.toml", support.dual_target_toml("proj")),
-    #(
-      "proj.graded",
-      "assume ffi.disk : [Disk]
-check ext.pass_quiet : [_]
-check ext.pass_loud : [_]
-",
-    ),
-    #(
-      "ffi.gleam",
-      "@external(erlang, \"d\", \"w\")
-@external(javascript, \"d\", \"w\")
-pub fn disk() -> Nil
-",
-    ),
-    #(
-      "raw.gleam",
-      "import ffi
-
-@external(javascript, \"e\", \"q\")
-pub fn quiet() -> Nil {
-  Nil
-}
-
-@external(javascript, \"e\", \"l\")
-pub fn loud() -> Nil {
-  ffi.disk()
-}
-",
-    ),
-    #(
-      "ext.gleam",
-      "import raw
-
-fn helper(f: fn() -> Nil) -> Nil {
-  f()
-}
-
-pub fn pass_quiet() -> Nil {
-  helper(raw.quiet)
-}
-
-pub fn pass_loud() -> Nil {
-  helper(raw.loud)
-}
-",
-    ),
-  ])
-  let assert Ok(results) = graded.check_project(root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
-  r.warnings
-  |> list.map(fn(warning) {
-    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
-      warning
-    #(function, reference, effects)
-  })
-  |> should.equal([
-    #(
-      "pass_loud",
-      types.QualifiedName("raw", "loud"),
-      types.Specific(set.from_list(["Disk", "Unknown"])),
-    ),
-  ])
-  support.cleanup(root)
-}
-
-pub fn a_reference_warning_quotes_only_the_half_in_reach_test() {
-  // A reference sits in a body that runs on Erlang alone, so the two externals it
-  // passes read there and nowhere else. `js_only`'s declaration is for
-  // JavaScript, so what runs here is its Gleam body and the warning quotes
-  // exactly that body's `[Disk]`. `erlang_only`'s declaration covers Erlang, so
-  // nothing declares what runs and the reference carries the `[Unknown]` a
-  // warning stays silent about — its Gleam body runs on the target this one
-  // never reaches. Quoting both halves regardless announced a `[Disk]` no
-  // implementation in reach performs, and paired it with an `[Unknown]` the walk
-  // does not charge.
-  let root = "build/reference_warning_half_in_reach"
-  support.write_fixture(root, [
-    #("gleam.toml", support.dual_target_toml("proj")),
-    #(
-      "proj.graded",
-      "assume ffi.disk : [Disk]
-check ext.pass_js_only : [_]
-check ext.pass_erlang_only : [_]
-",
-    ),
-    #(
-      "ffi.gleam",
-      "@external(erlang, \"d\", \"w\")
-@external(javascript, \"d\", \"w\")
-pub fn disk() -> Nil
-",
-    ),
-    #(
-      "raw.gleam",
-      "import ffi
-
-@external(javascript, \"e\", \"j\")
-pub fn js_only() -> Nil {
-  ffi.disk()
-}
-
-@external(erlang, \"e\", \"e\")
-pub fn erlang_only() -> Nil {
-  ffi.disk()
-}
-",
-    ),
-    #(
-      "ext.gleam",
-      "import raw
-
-fn helper(f: fn() -> Nil) -> Nil {
-  f()
-}
-
-@target(erlang)
-pub fn pass_js_only() -> Nil {
-  helper(raw.js_only)
-}
-
-@target(erlang)
-pub fn pass_erlang_only() -> Nil {
-  helper(raw.erlang_only)
-}
-",
-    ),
-  ])
-  let assert Ok(results) = graded.check_project(root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
-  r.warnings
-  |> list.map(fn(warning) {
-    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
-      warning
-    #(function, reference, effects)
-  })
-  |> should.equal([
-    #(
-      "pass_js_only",
-      types.QualifiedName("raw", "js_only"),
-      types.Specific(set.from_list(["Disk"])),
-    ),
-  ])
-  support.cleanup(root)
-}
-
-pub fn a_governed_native_body_still_warns_about_its_references_test() {
-  // The opposite case to the covered `@external` below, and the distinction the
-  // warning turns on. `assume governed : [Net]` answers for every
-  // *caller* of the module's functions, but these bodies are ordinary Gleam
-  // that runs: a `check` line on one is judged against the declaration and the
-  // body alike, and the effectful reference one passes is as untracked as it
-  // would be anywhere else — the reference is handed to code the declaration
-  // speaks for, which is exactly what a warning is for.
-  let root = "build/reference_warning_governed_module"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "assume ffi.disk : [Disk]
-assume governed : [Net]
-check governed.wrapped : [Disk, Net]
-check governed.strict : []
-",
-    ),
-    #(
-      "ffi.gleam",
-      "@external(erlang, \"d\", \"w\")
-@external(javascript, \"d\", \"w\")
-pub fn disk() -> Nil
-",
-    ),
-    #(
-      "governed.gleam",
-      "import ffi
-
-fn helper(f: fn() -> Nil) -> Nil {
-  f()
-}
-
-pub fn wrapped() -> Nil {
-  helper(ffi.disk)
-}
-
-pub fn strict() -> Nil {
-  helper(ffi.disk)
-}
-",
-    ),
-  ])
-  let assert Ok(results) = graded.check_project(root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == root <> "/governed.gleam" })
-
-  // A budget covers both halves: the declaration, and the visible body beside
-  // it. Both bodies call `helper`, a sibling the same line governs — and that
-  // line states `helper`'s own effects, not what it does with the callback it
-  // is handed, so a caller pays the `[Net]` plus the `[Disk]` reference it
-  // passes. `strict` breaks its `[]` on the declaration half and on the call;
-  // `wrapped` meets a budget stating both.
-  r.violations
-  |> list.map(fn(violation) {
-    let assert types.Specific(effects) = violation.explanation.actual
-    violation.function
-    <> ": "
-    <> string.join(set.to_list(effects) |> list.sort(string.compare), ",")
-  })
-  |> list.sort(string.compare)
-  |> should.equal(["strict: Disk,Net", "strict: Net"])
-
-  // Both bodies still pass the reference, so both warn.
-  r.warnings
-  |> list.map(fn(warning) {
-    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
-      warning
-    #(function, reference, effects)
-  })
-  |> should.equal([
-    #(
-      "strict",
-      types.QualifiedName("ffi", "disk"),
-      types.Specific(set.from_list(["Disk"])),
-    ),
-    #(
-      "wrapped",
-      types.QualifiedName("ffi", "disk"),
-      types.Specific(set.from_list(["Disk"])),
-    ),
-  ])
-  support.cleanup(root)
-}
-
-pub fn a_covered_fallback_body_reference_warns_about_nothing_test() {
-  // `covered` declares an implementation for every target it compiles for, so
-  // its Gleam body is dead text the declaration alone answers for — the `disk`
-  // reference in it is never passed anywhere, and a warning would quote an
-  // effect no run of the function performs. `running` declares javascript
-  // only, so the same body is what runs on erlang and its reference still
-  // warns.
-  let root = "build/reference_warning_dead_fallback"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "assume ffi.disk : [Disk]
-assume ext.covered : []
-assume ext.running : []
-check ext.covered : []
-check ext.running : [_]
-",
-    ),
-    #(
-      "ffi.gleam",
-      "@external(erlang, \"d\", \"w\")
-@external(javascript, \"d\", \"w\")
-pub fn disk() -> Nil
-",
-    ),
-    #(
-      "ext.gleam",
-      "import ffi
-
-fn helper(f: fn() -> Nil) -> Nil {
-  f()
-}
-
-@external(erlang, \"e\", \"c\")
-@external(javascript, \"e\", \"c\")
-pub fn covered() -> Nil {
-  helper(ffi.disk)
-}
-
-@external(javascript, \"e\", \"r\")
-pub fn running() -> Nil {
-  helper(ffi.disk)
-}
-",
-    ),
-  ])
-  let assert Ok(results) = graded.check_project(root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
-  r.warnings
-  |> list.map(fn(warning) {
-    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
-      warning
-    #(function, reference, effects)
-  })
-  |> should.equal([
-    #(
-      "running",
-      types.QualifiedName("ffi", "disk"),
-      types.Specific(set.from_list(["Disk"])),
-    ),
-  ])
-  support.cleanup(root)
-}
-
 // Tier precedence on the returns channel
 //
 // Which spec's line answers for a name when several key it. Four rules, one per
@@ -12770,8 +12347,9 @@ pub fn a_vendored_forks_clause_binds_over_the_catalogued_name_test() {
   // `[Environment]` the catalog keys `envoy.get` with, beside the callback
   // the blanket does not bound, which it may call.
   list.filter_map(violations, fn(violation) {
-    case violation.explanation.call.module {
-      "envoy" -> Ok(violation.explanation.actual)
+    case checker.call_kind(violation.explanation.call) {
+      checker.PassedArgumentCall(callee: "envoy.get", ..) ->
+        Ok(violation.explanation.actual)
       _ -> Error(Nil)
     }
   })
@@ -16374,9 +15952,11 @@ pub fn tick() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   ["direct", "via_operator"]
   |> list.each(fn(function) {
-    let assert Ok(violation) =
-      list.find(r.violations, fn(v) { v.function == function })
-    #(function, violation.explanation.actual)
+    #(
+      function,
+      list.key_find(function_totals(r.violations), function)
+        |> result.unwrap(types.Specific(set.new())),
+    )
     |> should.equal(#(
       function,
       types.Specific(set.from_list(["Disk", "Time", "Unknown"])),
@@ -16730,9 +16310,11 @@ pub fn tick() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   ["direct", "via_operator"]
   |> list.each(fn(function) {
-    let assert Ok(violation) =
-      list.find(r.violations, fn(v) { v.function == function })
-    #(function, violation.explanation.actual)
+    #(
+      function,
+      list.key_find(function_totals(r.violations), function)
+        |> result.unwrap(types.Specific(set.new())),
+    )
     |> should.equal(#(
       function,
       types.Specific(set.from_list(["Disk", "Time", "Unknown"])),
@@ -18787,4 +18369,22 @@ fn with_dependencies(
   registry: signatures.SignatureRegistry,
 ) -> signatures.SignatureRegistry {
   signatures.merge(support.dependency_registry(), registry)
+}
+
+// Each function's violations with their effects together: a callee's own
+// charge and what an argument it is handed carries are separate contributors.
+fn function_totals(
+  violations: List(types.Violation),
+) -> List(#(String, types.EffectSet)) {
+  violations
+  |> list.fold(dict.new(), fn(acc, violation) {
+    dict.upsert(acc, violation.function, fn(existing) {
+      case existing {
+        Some(total) -> types.union(total, violation.explanation.actual)
+        None -> violation.explanation.actual
+      }
+    })
+  })
+  |> dict.to_list
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }

@@ -411,3 +411,44 @@ pub fn built_variants_answer_the_per_target_scan_test() {
     }),
   )
 }
+
+// Variables by root
+
+fn variable_gen() -> qcheck.Generator(String) {
+  use #(root, path) <- qcheck.map(qcheck.tuple2(
+    one_of("f", ["g", "h", "<recursion:f>", "<returns:g>"]),
+    one_of("", [".x", ".x.y", ".returns"]),
+  ))
+  root <> path
+}
+
+// The variables rooted at a set of parameters, read off the variables by root,
+// are those the filter over every variable keeps, sorted.
+pub fn variables_by_root_answer_the_root_filter_test() {
+  use #(named, parameters) <- qcheck.run(
+    many(),
+    qcheck.tuple2(
+      qcheck.generic_set(variable_gen(), qcheck.bounded_int(0, 8)),
+      qcheck.generic_set(one_of("f", ["g", "h", "k"]), qcheck.bounded_int(0, 4)),
+    ),
+  )
+  let path_root = fn(path) {
+    case string.split_once(path, ".") {
+      Ok(#(root, _)) -> root
+      Error(Nil) -> path
+    }
+  }
+  let is_recursion_marker = fn(name) {
+    string.starts_with(name, "<recursion:")
+    || string.starts_with(name, "<returns:")
+  }
+  checker.rooted_variables(checker.variables_by_root(named), parameters)
+  |> should.equal(
+    set.to_list(named)
+    |> list.filter(fn(variable) {
+      !is_recursion_marker(variable)
+      && set.contains(parameters, path_root(variable))
+    })
+    |> list.sort(string.compare),
+  )
+}

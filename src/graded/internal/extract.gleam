@@ -1102,7 +1102,6 @@ pub type ExtractResult {
     resolved: List(ResolvedCall),
     local: List(LocalCall),
     field: List(FieldCall),
-    references: List(ResolvedCall),
     direct_ops: List(DirectOperatorCall),
     direct_pipe_ops: List(DirectPipeOp),
     // Directly-applied let-bound closures / case-of-functions (`let h = fn(x)
@@ -2057,35 +2056,6 @@ fn receiver_path(expression: Expression) -> Option(String) {
   }
 }
 
-// Resolve a qualified `alias.label` used as a value (not called).
-// Constructors short-circuit to empty; unknown aliases are dropped.
-fn resolve_qualified_reference(
-  alias: String,
-  function_name: String,
-  span: glance.Span,
-  context: ImportContext,
-) -> ExtractResult {
-  case is_constructor_name(function_name) {
-    True -> empty()
-    False -> qualified_reference_lookup(alias, function_name, span, context)
-  }
-}
-
-fn qualified_reference_lookup(
-  alias: String,
-  function_name: String,
-  span: glance.Span,
-  context: ImportContext,
-) -> ExtractResult {
-  case dict.get(context.aliases, alias) {
-    Ok(module_path) ->
-      ExtractResult(..empty(), references: [
-        ResolvedCall(QualifiedName(module_path, function_name), span),
-      ])
-    Error(Nil) -> empty()
-  }
-}
-
 // Statement walk and let bindings
 //
 // Extract effects from a single statement and record what each `let`/`use`
@@ -2809,13 +2779,6 @@ fn extract_from_expression(
         ),
       )
 
-    // Function reference: qualified name used as a value (not called).
-    glance.FieldAccess(
-      location: span,
-      container: glance.Variable(_, alias),
-      label: function_name,
-    ) -> resolve_qualified_reference(alias, function_name, span, context)
-
     // Other field access (not a call — just traversing)
     glance.FieldAccess(container:, ..) ->
       extract_from_expression(container, context, env)
@@ -2857,18 +2820,11 @@ fn extract_from_expression(
         env,
       )
 
-    // Unqualified function reference used as a value (not called)
-    glance.Variable(location: span, name:) ->
-      case dict.get(context.unqualified, name) {
-        Ok(qualified_name) ->
-          ExtractResult(..empty(), references: [
-            ResolvedCall(qualified_name, span),
-          ])
-        Error(Nil) -> empty()
-      }
-
     // Leaf nodes (no sub-expressions that can carry effects)
-    glance.Int(..) | glance.Float(..) | glance.String(..) -> empty()
+    glance.Variable(..)
+    | glance.Int(..)
+    | glance.Float(..)
+    | glance.String(..) -> empty()
   }
 }
 
@@ -5200,7 +5156,6 @@ fn empty() -> ExtractResult {
     resolved: [],
     local: [],
     field: [],
-    references: [],
     direct_ops: [],
     direct_pipe_ops: [],
     direct_closure_ops: [],
@@ -5216,7 +5171,6 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     resolved: list.append(left.resolved, right.resolved),
     local: list.append(left.local, right.local),
     field: list.append(left.field, right.field),
-    references: list.append(left.references, right.references),
     direct_ops: list.append(left.direct_ops, right.direct_ops),
     direct_pipe_ops: list.append(left.direct_pipe_ops, right.direct_pipe_ops),
     direct_closure_ops: list.append(
