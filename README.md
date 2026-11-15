@@ -53,7 +53,7 @@ src/app.gleam: view calls gleam/io.println with effects [Stdout] (from gleam_std
 graded: 1 violation(s) found
 ```
 
-Remove the `io.println` and the check passes. Lustre's `init` and `update` functions are also pure — they return `#(Model, Effect(Msg))` where `Effect` is a data description, not an executed side effect.
+Remove the `io.println` and the check passes. Lustre's `init` and `update` functions are pure too — they return `#(Model, Effect(Msg))` where `Effect` is a data description, not an executed side effect — but graded charges an effect built from an inline closure to the function that builds it, and reads a `main` that starts the application as `[Unknown]` for what its effects do when performed. [LIMITATIONS.md](docs/LIMITATIONS.md#11-an-inline-closure-charges-the-function-that-writes-it) shows how to keep `init` and `update` at `[]`.
 
 Function names in the spec file are **module-qualified**: `app.view` means the `view` function in module `app`. Use slashes for nested module paths (`app/router.handle_request`).
 
@@ -132,7 +132,7 @@ walks every count and every listing with a worked example.
 
 ## Limitations
 
-graded is **sound, not complete**: it combines syntax-level analysis ([glance](https://hexdocs.pm/glance/)) with type information ([girard](https://hexdocs.pm/girard)), and when it can't statically trace a function value it falls back to the `[Unknown]` effect rather than guess. `[Unknown]` fails an effect budget, so graded never silently *understates* effects — but a few value-flow patterns need a hand-written annotation or a wider budget to resolve.
+graded is **sound, not complete**: it combines syntax-level analysis ([glance](https://hexdocs.pm/glance/)) with type information ([girard](https://hexdocs.pm/girard)), and when it can't statically trace a function value it falls back to the `[Unknown]` effect rather than guess. `[Unknown]` fails an effect budget, so graded never silently *understates* effects — relative to the `assume` lines and dependency specs it reads, provided every spec it reads is current ([THEORY.md](docs/THEORY.md#step-6-soundness-and-the-unknown-grade)) — but a few value-flow patterns need a hand-written annotation or a wider budget to resolve.
 
 Idiomatic Gleam — inline callbacks, direct and aliased function references, pipe chains, higher-order functions passing functions by name (including second-order [operator effects](https://github.com/alvivi/graded/blob/main/docs/SECOND_ORDER_EFFECTS.md)), and validator/handler/config records — is handled automatically, including across modules: a fresh checkout resolves transitive chains with no prior `graded infer` (committed `effects` lines always win, and `check` writes nothing to disk).
 

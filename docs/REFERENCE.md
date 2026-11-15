@@ -217,6 +217,13 @@ nothing ever verifies an assumption, its arguments included:
   scoping the line's clause) and through its payload's *free variables* (the
   substitution keys). `assume m.f(cb: [e]) : [e]` is valid and binds even
   though `e` names no bound.
+- A variable is identified by the bound whose payload introduces it, wherever
+  the line uses it: the effects term, `where returns`, `runs`, `relay` and
+  `carries`. With `cb: [e], other: [cb]`, `cb` is the variable `other`
+  introduces, not the parameter `cb`. What a callback returns is named after
+  its variable the same way: in `carries : [e.returns]`, `e.returns` is what
+  the callback whose bound introduces `e` returns. A variable no payload
+  introduces names the bound of that name.
 - A bound's name is one of the function's parameters, by its name or its
   label, and matches the argument a call passes that parameter, labelled or
   positional. A name the function's signature does not have matches nothing
@@ -298,7 +305,8 @@ back, hand-written and never regenerated. The effects clause before it is
 optional — `assume myapp/ffi.make_client where returns : [Net]` claims nothing
 about `make_client`'s own effect, and the tiers below keep answering for it. A
 declared operator's variables are scoped by **the line's own bound list, and
-nothing else**: one the bounds do not name is ignored and flagged, and the
+nothing else**: one the bounds neither name nor introduce is ignored and
+flagged, and the
 registry-and-dotted-variable leniencies an `effects` line's clause enjoys do
 not apply — a foreign producer has neither a walkable signature nor a
 field-bound story. A ground operator is the empty-bounds case of the same
@@ -333,8 +341,10 @@ an unbound variable and for an aliased bound exactly as an `assume` line's is.
 
 The `where` region is a comma-separated list of `<key> : <payload>` entries,
 split at bracket and paren depth 0 — so a comma inside `[...]` or `fn(...)` is
-not a separator. `returns` is the one key this version reads, and it may appear
-at most once; a second one is a parse error rather than a silent last-wins.
+not a separator. This version reads four keys: `returns` (above), and `runs`,
+`relay` and `carries` (see [Function values in data](#function-values-in-data)).
+Each may appear at most once, `relay` once per callback; a second one is a parse
+error rather than a silent last-wins.
 
 Every other key is **retained, not read**. The line parses, the clause resolves
 nothing, and `graded check` warns once per line naming all of its unknown keys.
@@ -492,7 +502,10 @@ order and takes the first hit:
    or the answer it replaces was exactly `[Unknown]`. Under your module-level
    `assume` its inference never answers. Its returned operators and provenance
    fill only names nothing answered for, and its field `assume` lines are not
-   applied. A call site reading the signatures, factories, update builders,
+   applied. A line that answers keeps its `runs`, `relay` and `carries`
+   clauses, its `carries` only where the answer it replaces declared no carried
+   result; a line that does not answer lends a ground `carries` to a reviewed
+   catalog line that declares none. A call site reading the signatures, factories, update builders,
    constructors or provenance it brings keeps the answer it had without them
    wherever they would leave that site `[Unknown]`.
 5. **Bundled catalog** — the versioned catalog files shipped with graded (see
@@ -619,8 +632,11 @@ binds the variable to the argument's effects:
 - the caller's **own bounded parameter** → that bound's effects.
 
 An **inline closure** argument (`validate_range(42, fn(m) { io.println(m) })`) is
-analysed directly — its body's effects are counted in the caller — so it resolves
-without needing the variable. Both labeled (`to_error: OutOfRange`) and positional
+analysed directly: its body's effects are charged to the function that writes it,
+wherever the closure is passed — to a callee that calls it, one that stores it,
+or one that never runs it — so it resolves without needing the variable. That
+over-charges a function that only builds a description from a closure; see
+[LIMITATIONS.md](./LIMITATIONS.md#11-an-inline-closure-charges-the-function-that-writes-it). Both labeled (`to_error: OutOfRange`) and positional
 (`OutOfRange`) arguments resolve. A function value graded can't trace — pulled from
 a data structure, say — stays `[Unknown]`; see [LIMITATIONS.md](./LIMITATIONS.md).
 
@@ -657,6 +673,138 @@ What a value carries is read from its type where one is inferred, and from the
 value otherwise: a reference, a closure, a capture, a literal, or a list,
 tuple or record whose every part is read. A value nothing reads carries
 `[Unknown]`. No warning stands in for a charge.
+
+### Function values in data
+
+Every argument **carries** a latent effect: what the function values reachable
+in it — in a list, a tuple, a record, a result, a map, a closure's captures —
+may do when they run. graded reads it as one of three things:
+
+- **nothing** — the argument's type is proven to hold no function: a fully
+  expanded shape with no type variable, `Dict(Int, Int)` but not `Dict(k, v)`.
+  In a package read on both targets the proof holds on each: a value typed, or
+  a type defined, differently for each target with `@target` is read on both;
+- **known** — every function value in it is one graded can name: a reference,
+  a closure, a capture, a construction at the site, a let-bound value traced to
+  one, or a result a line describes;
+- **unknown** — anything else: a type variable, a value from a function the
+  type inference did not read, a parameter no bound describes, the result of a
+  call no line describes, and a value of an external type or `Dynamic`, which a
+  foreign producer can fill with a callback without ever being handed one.
+
+A constructor handed over as a callback costs nothing to call, and its result
+carries what it is handed: what a line relays to it, `[Unknown]` where nothing
+says, and nothing where its type proves the record holds no function. A
+capture `f(a, _)` costs, each time it is applied, evaluating the arguments it
+fixes as well as the call it makes.
+
+Where an argument reaches code that may run it, the function doing the calling
+is charged what the argument carries — `[Unknown]` for an unknown one. A line
+says where that is with three clauses, over the variables its bound list names.
+
+**A bound on a parameter that is not a callback** names what that argument
+carries. It may appear in `runs`, `relay` and `carries`, never in the effect
+term: the term is what calling the function costs, and running a carried
+value is `runs`'s charge.
+
+**`runs : [v, …]`** lists the arguments the function may run, by their carried
+variables. It is exhaustive: on a line that has it, the arguments it lists are
+charged what they carry, wherever in them it sits, and every other argument
+that is not a callback is charged nothing. `runs : []` says the function runs
+none of them.
+
+```
+// a foreign runner that calls every function in its list
+assume myapp/ffi.run_all(fs: [fs]) : [] where runs : [fs]
+
+// a foreign store that never runs what it is handed
+assume myapp/ffi.keep(value: [v]) : [] where runs : []
+```
+
+**Without `runs`, everything runs.** A written line with no `runs` clause
+charges every argument that is not a callback what it carries, whatever bounds
+it has; a callback it gives no bound is charged as something the function may
+call. So `assume myapp/ffi.run(w: [w]) : []` charges `run(Wrapper(loud))` the
+`[Stdout]` of `loud`, and `assume myapp/ffi : []` does the same for every
+function in the module. `graded infer` never adds `runs` to a line you wrote.
+
+**`relay : f(…)`** maps a callback's positional parameters to carried
+variables, `_` for a position it maps none to. The callback is then charged
+what it does with the values handed to it, not just its own cost:
+
+```
+assume gleam/list.each(list: [list], f: [f]) : [f]
+  where runs : [],
+        relay : f(list)
+assume gleam/list.fold(list: [list], fun: [fun]) : [fun]
+  where runs : [],
+        relay : fun(_, list)
+```
+
+Under the first, `list.each([loud], fn(f) { f() })` reads `[Stdout]`: the
+closure calls its parameter, and the relay says that parameter is an element of
+the list. Under the second, the accumulator position is mapped to nothing, so a
+`fold` step that calls its accumulator reads `[Unknown]`.
+
+**`carries : [term]`** states what the function's result carries, over its
+bound variables. A callback variable with a `.returns` suffix names what that
+callback's result carries:
+
+```
+assume gleam/dynamic/decode.field(field_decoder: [d], next: [n]) : []
+  where runs : [],
+        carries : [d, n, n.returns]
+assume gleam/dynamic/decode.run(decoder: [d]) : [] where runs : [d]
+```
+
+A result no line describes is unknown, and stays unknown through aliases,
+storage, extraction, capture in a closure and re-export: applying it, or
+passing it where it may run, charges `[Unknown]`, while returning it or handing
+it to a function that does not run it charges nothing. Its producer is not
+charged for it. A line's effect term never describes its result:
+`assume myapp/ffi.make() : []` says what calling `make` costs, not what running
+what it returns costs. A result with both a `where returns` operator and a
+`carries` set uses the operator where the result is applied and the carried set
+anywhere else it may run.
+
+Each parameter's kind — callback, not a callback, or unknown — is read from
+the function's signature after the line is parsed. A parameter whose kind
+cannot be read (an unresolved alias, a type variable, no signature) gets no
+promise: its argument is charged both as something that may run and as a
+callback. A variable two bounds share takes what both contribute.
+
+The rules a line breaks once kinds are known — a carried variable in the
+effect term, `.returns` on a parameter that is not a callback, a relay into a
+non-callback or with the wrong number of positions, a variable shared by a
+callback and a carried bound — are errors in your own spec, reported by
+`check`, `effect`, `why` and `infer` with the line they sit on:
+
+```
+graded: error: Parse error in myapp.graded:1: assume myapp/ffi.keep(value: [v]) : [v]
+  `v` names what `value` carries, which the effect term cannot charge; list it in `runs` instead
+```
+
+A line over a dependency's function defined once per target is weighed in the
+variant each target builds, and its error quotes it as written. Where a
+package read on several targets finds the line breaks the rules in some of
+those variants only, each such target refuses it, charging the name `[_]`
+there, with a warning naming the targets, and the others read it; the error
+stands only where every target that builds the function breaks it. A target
+that builds no definition of the function, where another does, still charges
+`[_]` for a line it breaks, and the verdict is the other targets'.
+
+In a dependency's spec the whole line is refused instead, its bounds and
+clauses with it, the name is charged `[_]`, and graded warns once per spec. A
+malformed `runs`, `relay` or `carries` clause in a dependency spec or the
+catalog is read as absent: the line runs everything and its result is
+undescribed, never no-run or carrying nothing.
+
+`effects` lines carry none of the three in this version; `graded infer` does
+not write them, and one written on an `effects` line by hand is an error.
+
+These clauses are read by this version of graded and later ones. An older
+graded reading a spec that uses them ignores them, and can pass a check over a
+call that runs something.
 
 ## Type field effects
 
@@ -807,12 +955,16 @@ keys per-function too (see
 The declared set is what the module's functions cost *on their own*. It says
 nothing about a callback one of them is handed, so a caller that passes an
 effectful function to a higher-order name in the module pays that function's
-effects on top: under `assume gleam/list : []`, `list.map(xs, io.println)`
-is still charged the `[Stdout]` of `io.println`. That holds however the
-higher-order name is reached — called, passed to a helper, or wired into a
-record field. To state a callback's budget instead of having it charged, give
-the function a per-function line with a bound list (`assume mod.each(cb: []) :
-[]`), which is available wherever a per-function line is.
+effects on top: under `assume some_dep/list : []`, `list.map(xs, io.println)`
+is still charged the `[Stdout]` of `io.println`. Nor does it say anything about
+the function values an argument holds, so a list of callbacks handed to one of
+its functions is charged what the list carries (see
+[Function values in data](#function-values-in-data)). That holds however the
+name is reached — called, passed to a helper, or wired into a record field. To
+state a callback's budget instead of having it charged, give the function a
+per-function line with a bound list (`assume mod.each(cb: []) : []`), and a
+`runs` clause to say which arguments it runs; both are available wherever a
+per-function line is.
 
 For a *dependency* module whose functions differ, use the per-function form. For
 one of **your own** modules, the per-function form is not the answer — it names a
@@ -878,29 +1030,23 @@ both the declaration and the fallback. An `@external` for every target it is
 compiled for (both, or the one a `@target` narrows it to) is answered by the
 declaration alone.
 
-Whether *callers* pay that body too is decided by who wrote the winning
-declaration. A per-function `assume` from a written spec — your own line, or
-the one a dependency's author ships, path dependencies included — answers
-**alone**, even where the fallback body runs: `assume` means trusted and never
-verified, the line's author can see the body too, and if they wanted the union
-they would have written the wider term. Callers pay the declared term exactly;
-the body's own charge is dropped from the union and reported as suppressed
-wherever the charge is explained, so a body that runs is never silently read
-as absent. A **boundless** line answers only for the external's own effects:
+*Callers* pay that body too, whoever wrote the winning declaration — a
+per-function `assume` from your spec or a dependency's, a catalog entry, or a
+module-level `assume`. The declaration answers for the targets the external
+covers and the body is what runs on the others, so a caller pays the union of
+what a build for each target alone charges, and the body's share is named
+wherever the charge is explained. A **boundless** line answers only for the
+external's own effects:
 it says nothing about the callbacks, so a caller still pays each
 function-typed argument's actual effects on top of the declared term —
 whether the external is called directly, passed as a value, or wired into a
-field. A line with its own bound list answers for the callbacks too, as
-written. The other declaring forms keep the union: a **catalog** entry
-describes the version graded's maintainers annotated, not necessarily the
-installed body, and a **module-level** `assume` is a blanket that never named
-the function it would be silencing — under either, callers still pay the
-declaration beside what the body does. And in every case the external's own
-`check` line weighs the walked body beside the declaration: an `assume`
-changes what callers pay, never what the function's own line proves. Where the
-declaration is out of reach entirely — its targets are ones this build never
-compiles — the fallback body answers instead, suppressed by nothing:
-suppression there would charge a build that didn't happen.
+field. A line with its own bound list answers for the callbacks it bounds, as
+written, on the targets it covers; every argument it does not bound is charged
+as its `runs` clause says, and all of them are on a line without one (see
+[Function values in data](#function-values-in-data)). The external's own
+`check` line weighs the same union. Where the declaration is out of reach
+entirely — its targets are ones this build never compiles — the fallback body
+answers instead.
 
 Which targets your package is compiled for comes from `gleam.toml`: the top-level
 `target`, or `[tools.graded].targets` for a package really built for both, which
@@ -932,9 +1078,8 @@ a `gleam build --target javascript` against such a package is invisible to it:
 - What a declaration *states* is read on every target. So an
   `@external(javascript, …)` with a Gleam fallback is still foreign code, an
   `assume` line for it still answers, `graded infer` keeps that line, and
-  callers are charged the declaration beside what the fallback body does — or
-  the declaration alone, where a written per-function `assume` suppresses the
-  body's half (above).
+  callers are charged the declaration beside what the fallback body does
+  (above).
 
 Declaring `[tools.graded].targets` replaces both readings with what you wrote.
 
@@ -976,8 +1121,11 @@ a helper handed an undeclared external contributes `[Unknown]` rather than the
 `[]` its bodyless declaration reads as.
 
 What it does *not* answer for is the value the external hands back. A declaration
-states what calling the function costs; nothing in it describes the closure an FFI
-producer returns, the record it builds, or the fields either wires. So an
+states what calling the function costs; nothing in its effect term describes the
+closure an FFI producer returns, the record it builds, or the fields either wires.
+A `carries` clause states what such a result holds, and with none it is unknown:
+applying it, or passing it where it may run, charges `[Unknown]` (see
+[Function values in data](#function-values-in-data)). So an
 `@external`'s return provenance and its factory and update-builder signatures are
 refused whether or not it is declared and whether or not a Gleam fallback body
 beside it runs, and an inferred `where returns` clause for one is refused too:
@@ -1001,23 +1149,18 @@ pub fn caller() -> Nil {
 assume myapp/ffi.make_logger : [] where returns : [Stdout]
 ```
 
-Without that clause the call is `[Unknown]`. With it, a written clause is
-trusted even where a Gleam fallback body runs beside the declaration — the
-clause is its author's own line, trusted whole exactly as the effects half of
-a written `assume` is, and this holds by the clause's *own* source: a
-clause-only `assume dep/ffi.make where returns : [Net]` answers even while the
-name's *effects* come from the catalog and keep the body union — two channels,
-two winning lines, each trusted by its own author. One reading still refuses
-the clause, and the call says so:
+Without that clause the call is `[Unknown]`. With it, the clause answers for
+the targets the external covers, whichever line won the name's *effects* — a
+clause-only `assume dep/ffi.make where returns : [Net]` beside a catalog entry
+included. Where a Gleam fallback body runs on another target, the closure it
+hands back there is charged too: the returned function costs the clause
+joined with what that body returns — the operator graded reads off one of your
+own bodies, or `[Unknown]` for a dependency's, whose body it does not read for
+what it returns. One reading refuses the clause, and the call says so:
 
 - **out of reach** — the declaration names only targets this build does not
   compile, so nothing it describes is what runs. The same reading that drops
   the external's own declared effects.
-
-(A clause from a source that does not suppress the running fallback would stay
-refused beside one — the two implementations can hand back different closures
-and there is no union of operators to take — but every declared clause today
-comes from a written spec; the refusing arm waits on a catalog returns tier.)
 
 Three declared clauses are dropped rather than trusted, each flagged by the spec
 lint: an operator with free effect variables (a foreign decorator returning a
@@ -1044,12 +1187,10 @@ body says it hands back. Where a
 dependency's external carries a fallback body that runs on some target, that body
 is walked — read from the dependency's own source, on the targets your build
 compiles — and its effects are unioned into a catalog or module-level
-declaration, exactly as they are for one of your own, while the package's
-shipped per-function `assume` answers alone with the walked half reported as
-suppressed. `[Unknown]` joins the union only where the walk reaches a
-name nothing declares, or where graded could not read the module the body lives
-in — and the same shipped line suppresses that `[Unknown]` too, so an
-unreadable module does not widen a declared name.
+declaration, exactly as they are for one of your own, the package's shipped per-function
+`assume` included. `[Unknown]` joins the union where the walk reaches a name
+nothing declares, or where graded could not read the module the body lives
+in.
 
 `graded effect` answers for the public API, so a *private* `@external` exits
 non-zero there as a private ordinary function does — including one a valid
@@ -1308,6 +1449,34 @@ semantics. A dependency that ships its own `.graded` spec overrides the catalog
 The catalog covers the core `gleam-lang` packages and the most-used community
 libraries.
 
+### The catalog's contracts
+
+Beside each catalog file, `priv/catalog/{package}@{version}.audit` records a
+review of the package's source: the versions it covers, the names reviewed, and
+what each does with the function values it is handed. Only a reviewed name's
+line is read with its `runs`, `relay` and `carries` clauses, and only while the
+installed version is one the review covers:
+
+- a reviewed name answers with its published contract. Where the line has no
+  `runs` clause, the review found the function runs nothing nested in its
+  arguments, so the default is the reverse of a written line's: its arguments
+  are charged nothing beyond its callbacks;
+- a reviewed constant carries what the record says (`decode.int` carries
+  nothing);
+- a function the record lists as a container result returns a value carrying
+  everything its arguments carry and its callbacks cost and return (the
+  `lustre/element/html` builders, the decoder combinators);
+- an external type the record lists as a container of its type parameters
+  (`gleam/dict.Dict`) is read through them, so `Dict(Int, Int)` holds no
+  function;
+- a name the review does not cover, and every name of a version past the
+  reviewed range, follows the written-line default: every argument may run,
+  and its result is undescribed.
+
+The records are graded's own and never ship in a user's spec. A line you write
+for a catalogued name replaces the catalog's and keeps the written-line
+default; give it a `runs` clause to say otherwise.
+
 ### Reading the catalog
 
 `graded catalog` prints what the bundled catalog holds, writing nothing. Which
@@ -1481,5 +1650,7 @@ function: a function girard can't type falls back to the syntax-level path, so
 types only ever *sharpen* a result (resolving a field call's receiver, for
 example), never change an already-resolved one. The analysis is **sound, not
 complete**: when it can't statically trace a value it falls back to the `[Unknown]`
-effect rather than guess, so effects are never silently understated. The patterns
+effect rather than guess, so effects are never silently understated relative to the
+declarations it reads, provided every spec it reads is current (see
+[THEORY.md](./THEORY.md#step-6-soundness-and-the-unknown-grade)). The patterns
 that fall back are catalogued in [LIMITATIONS.md](./LIMITATIONS.md).

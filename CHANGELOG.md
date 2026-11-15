@@ -7,7 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `assume` lines take three clauses that say what a function does with the
+  function values its arguments hold: `runs : [v, …]` lists the arguments it
+  may run, `relay : f(…)` says which of them a callback is handed, and
+  `carries : [term]` says what its result holds. A bound on a parameter that is
+  not a callback names what that argument carries:
+  `assume myapp/ffi.run_all(fs: [fs]) : [] where runs : [fs]`. A spec that uses
+  them needs this version of graded or later; an older graded ignores them.
+
 ### Changed
+
+- A package whose `targets` names both takes about 15% longer to analyse
+  where it defines a name once per target with `@target`, or reads a
+  dependency that defines a public function once per target, or a type once
+  per target that can hold a function value on one of them.
+- After upgrading, regenerate your dependencies' specs (or obtain current ones),
+  callees first, then run `graded infer` on your project. A spec an older
+  graded generated is read as current and can under-charge its callers, and
+  `graded infer --check` checks only the package it runs on.
+- A function value handed to code that may run it is charged there. In a list,
+  tuple, record, result or map passed to a foreign function, to a function no
+  line describes, or to a field call, it is charged what it does:
+  `run_all([loud])` and `run(Wrapper(loud))` read `[Stdout]` where they read
+  `[]`.
+- A callback's call to its own parameter is charged what the function calling
+  the callback hands it: `list.each([loud], fn(f) { f() })` and
+  `list.each([io.println], fn(f) { f("x") })` read `[Stdout]` where they read
+  `[]`.
+- A function capture passed as a callback is charged as the function it
+  captures: `list.each([1, 2], shout("x", _))` reads `[Stdout]` where it read
+  `[]`.
+- A value whose function values graded cannot read is charged `[Unknown]`
+  where it may run, where it was charged nothing: a list from a foreign
+  producer or a value of a type variable, for instance, and the other shapes
+  in [LIMITATIONS.md](docs/LIMITATIONS.md#12-a-function-value-graded-cannot-read-where-it-may-run).
+  Their callers read `[Unknown]` too, and a Lustre `main` that starts an
+  application reads `[Process, Dom, Unknown]`.
+- A function that calls its own callback parameter with a value of a type
+  variable reads `[Unknown]`, and so do its callers: `apply(f, x)` with `x: a`
+  reads `[Unknown, f]` where it read `[f]`. On Erlang every `dict.fold` call
+  reads `[Unknown]` beside what its callback does;
+  [LIMITATIONS.md](docs/LIMITATIONS.md#13-a-callback-handed-a-value-of-a-type-variable)
+  shows a fold that reads exactly.
+- An `assume` line without a `runs` clause charges every argument that is not
+  a callback what it carries, and charges a callback it gives no bound as one
+  the function may call. A module-level `assume` does the same for every
+  function in its module. Add `runs : []` to a line whose function runs none of
+  its arguments.
+- The bundled catalog states what each name a review of the package covered
+  does with the function values it is handed: `list.each` and the other relays
+  stay exact, and `string.inspect(x)` stays `[]`. `effect.from` charges a
+  named callback as it charges an inline one, so a Lustre `init` whose effect
+  prints reads `[Stdout]` where it read `[Unknown]` or `[Stdout, Unknown]`. A
+  name no review covered, or an installed version newer than the review, is
+  read like a line you wrote, as
+  [REFERENCE.md](docs/REFERENCE.md#the-catalogs-contracts) describes.
+- A field value relayed by the standard library is charged:
+  `list.each(["x"], cfg.on_item)` reads `[Stdout]` when `cfg` is built in the
+  same function with `on_item: io.println`, where it read `[]`.
+- `decode.run` over a decoder whose named continuation prints reads
+  `[Stdout, Unknown]` where it read `[Stdout]`: what the continuation's result
+  holds is unknown.
+- A bound on a parameter that is not a callback, used in the line's effect
+  term, is an error: `assume myapp/ffi.keep(value: [v]) : [v]` reports that
+  `v` names what `value` carries. List it in `runs` instead:
+  `assume myapp/ffi.keep(value: [v]) : [] where runs : [v]`.
+- A dependency's spec line that breaks the rules for these clauses is refused
+  as a whole and its function charged `[_]`, with one warning per spec.
 
 - A local package graded now reads for the first time can change answers that
   involve it. A catalog line or module-level `assume` with no bounds over one
@@ -29,9 +97,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gleam deps download` or `gleam build` to bring them back in step. The same
   holds while the manifest lists a hex or git package and `build/packages`
   cannot be listed.
+- In a `where returns` clause on an `assume` line, a variable stands for
+  what is passed to the parameter whose bound introduces it, as it already
+  did in the line's effects term. With
+  `assume m.wrap(cb: [e], other: [cb]) : [] where returns : [cb]`, the
+  returned function is charged what is passed as `other`, where it was
+  charged what is passed as `cb`. Such a variable is no longer flagged as
+  naming no bound.
+
+### Removed
+
+- The warning that a function passed as a value is not tracked. Such a function
+  is charged where it may run, so a `check … : []` over
+  `list.each([io.println], fn(f) { f("x") })` fails where it passed with a
+  warning, and the charge names what was passed: "passes `loud` to
+  `app/ffi.run_all`, which may run it".
 
 ### Fixed
 
+- A recursive call is charged what the function does with the arguments the
+  call passes, where it was charged nothing. With
+  `fn choose(n, f) { case n { 0 -> f() _ -> choose(n - 1, shout) } }`,
+  `choose(1, quiet)` reads `[Stdout]` where it read `[]`, and `check` reports
+  it. The same holds through mutual recursion, a recursive function that
+  returns a function, and a function that hands itself to another, and for a
+  field of a record the function calls: with
+  `fn choose(n, b) { case n { 0 -> b.run() _ -> choose(n - 1, Box(shout)) } }`,
+  `choose(1, Box(quiet))` reads `[Stdout]` where it read `[]`.
+- A function returning what another returns for one of its own callbacks
+  publishes a `where returns` clause, and its callers read what they pass:
+  with `fn outer(f) { inner(f) }` and `fn inner(g) { g }`, `outer(quiet)()`
+  reads `[]` and `outer(shout)()` reads `[Stdout]`, where both read
+  `[Unknown]`.
+- An `assume` line over an `@external` answers only for the targets the
+  external declares. Where its Gleam fallback body runs on another target your
+  package is read on, callers pay the line's term unioned with what that body
+  does, and a function the external returns is charged its `where returns`
+  clause joined with what the body returns there — `[Unknown]` for a
+  dependency's body. `assume dep.go : []` over an Erlang external whose
+  JavaScript body prints read `[]` with both targets named and now reads
+  `[Stdout]`, the explanation naming the body's share beside the line. This
+  reverses 0.18.0's rule that a written line answers alone.
+- A `carries` or `runs` clause on such a line applies only on the targets the
+  external declares, in a package read on one target as on two. With
+  `assume carrier.make : [] where carries : []` over an Erlang external whose
+  JavaScript body returns a printing record, `ffi.sink(carrier.make())` read
+  `[]` in a package read on JavaScript alone, and now reads `[Unknown]`; read
+  on Erlang alone, it still reads `[]`.
+- `graded infer` writes, for one of your own `@external`s whose Gleam body runs
+  on another target your package is read on, `[Unknown]` unioned with what
+  that body does — `run(f: [f]) : [Unknown, f]` where it wrote
+  `run : [Unknown]` — as `graded effect` states, and `graded effect` no longer
+  lists a bound for a callback its answer does not charge.
+- A function defined once per target with `@target` is charged what each
+  variant the package builds does: `get()` whose JavaScript variant prints
+  reads `[Stdout]` where it read `[]`. Calling it, passing it and using what
+  it returns had each read one variant, in a package with one target sometimes
+  the one it never builds.
+- A public function defined once per target has one `effects` line, where it
+  had one per variant. Its parameters are those of the variant written first.
+- In a package whose `targets` names both, `graded check` passes a line only
+  where it holds on every target that builds the function, and names the
+  targets each violation holds on, as in `(on javascript)`. `graded why` marks
+  each contributor with the targets it comes from. A function built on one
+  target is checked and explained there alone, as `graded infer` and
+  `graded effect` read it.
+- A call to a dependency's function defined once per target reads the
+  dependency's line in the variant your target builds: a positional or
+  labelled argument reaches the parameter it reaches in that variant, where it
+  could reach another variant's, and `e.returns` in a `carries` clause is what
+  the callback whose bound introduces `e` returns. A catalog line or your own
+  `assume` line over such a function is written in the parameters the
+  dependency publishes and read the same way. Your own line is weighed in the
+  variant your target builds: one the rules forbid there is refused on that
+  target alone, with a warning naming it, and read on the others, and a run on
+  that target alone stops on it. The dependency's own line is read only on a
+  target the dependency's `targets` names; on another, the call reads
+  `[Unknown]`, with the functions you pass charged, and `graded effect` on the
+  function adds `[Unknown]` for that target and names it, whether the run
+  reads that target alone or beside the other. Its answer names the
+  parameters, and the bounds of a `where returns` clause, as the dependency
+  publishes them, whichever variant your target builds.
+- A name is read as the binding it names where it is written. A pattern,
+  destructured `let` or `use` binding that reuses a parameter's, a module
+  function's or an unqualified import's name, a closure a `case` arm returns
+  over its pattern, and a record field read after its stored name is bound
+  again no longer borrow the other binding's effect: each read `[]` where the
+  program printed, and now reads `[Unknown]` or what it calls.
+- A `case` whose branches are themselves `case`s over the same functions,
+  nested a few levels deep, is read once per distinct function. Inference over
+  such code ran out of memory.
+- A record a function returns, read in another module, is read by the
+  returning module's names. A field holding what that function was handed now
+  reads `[Unknown]`, and one holding a function of its module reads that
+  function, where either could read an unrelated parameter or function of the
+  reading module and give `[]` while the program printed.
 - A call into a path dependency that your `gleam.toml` does not declare by path
   — one another path dependency declares, or one an installed package requires
   — resolves from that package's spec or source, where it read `[Unknown]`.

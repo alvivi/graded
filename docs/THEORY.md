@@ -147,20 +147,38 @@ effects(render_header) = {Stdout}
 effects(view) = effects(render_header) = {Stdout}
 ```
 
-graded follows local function calls recursively, with cycle detection (via a visited set) to handle mutual recursion:
+graded follows local function calls recursively. A call back into a function it is already following, directly or through others, is charged what that function does with the arguments the call passes. The group's summary is a fixed point over the variables of its parameters, a field of a record parameter included:
 
 ```gleam
 fn a() { b() }
 fn b() { a() }  // cycle — detected, not infinite loop
+
+fn choose(n, f) {
+  case n {
+    0 -> f()
+    _ -> choose(n - 1, shout)  // charged what `choose` does with `shout`
+  }
+}
 ```
+
+A call back in that hands on every argument it received, wherever its type can hold a function, adds nothing beyond the walk it is part of: a summary over effects is a constant beside what it runs, so its least fixed point is that walk. Every field path the group's own first walk names is admitted, however many there are: that walk names every path the source writes. A path discovered past those is admitted up to the deepest nesting of the types the group's parameters are written with, beyond the longest path the first walk names, which only a type holding itself outgrows; the number of paths so discovered is admitted up to the group's parameters times the paths so long over the labels its first walk names. A variable past either reads as `[Unknown]`, so a summary of labels and variables settles, and its work depends on the group alone. A function that never calls back into itself takes no fixed point. A summary that applies an operator is given 32 rounds beyond the labels and variables it names, each round's term at most 16 times the size of the body it iterates, and is read as `[Unknown]` where it outgrows either.
 
 ## Step 6: Soundness and the `[Unknown]` grade
 
 graded is a *static* analysis, so it can't always know what a value does at runtime — an `@external` FFI function, a function pulled out of a list, a dependency that ships no annotations. Rather than guess (and risk calling an impure function pure), graded gives such a value the grade **`[Unknown]`**: "could be any effect."
 
-`[Unknown]` behaves like the **top** of the effect ordering — it is *not* a subset of any concrete budget, so a `check` that reaches an unresolved value fails rather than passing silently. This is what **sound, not complete** means: graded over-approximates, so it may ask you to annotate something it can't prove, but it never *understates* a function's effects. A green check is a real guarantee; a red one may just need a hint.
+What graded guarantees is an invariant, stated relative to what it is told. Every `assume` line, catalog line and dependency spec line answers for what it states and nothing more. Given those, every function's answer includes every effect it can cause — its own calls, and every function value it can activate. A function value is charged where graded sees it applied, or where it reaches code that may run it without graded seeing the run: a callee whose line says it runs that argument, a callee no line describes, a callback's call to its own parameter, a field call. Charging some other function earlier does not count: a decoder whose closure was charged where it was built is charged again in the function that runs it.
 
-That hint is the escape hatch — an `assume` line or a wider budget turns the `[Unknown]` into a concrete grade graded can check. The patterns that produce `[Unknown]`, and how to resolve each, are catalogued in [LIMITATIONS.md](./LIMITATIONS.md).
+A value whose latent effect graded cannot read — a type variable, an external type, an undescribed result — is charged `[Unknown]` where it may run. That is what **sound, not complete** means: graded over-approximates, so it may ask you to annotate something it can't prove, but it never *understates* a function's effects relative to its declarations.
+
+`[Unknown]` reads two ways:
+
+- **In an answer**, it means any effect may happen. A function inferred `[Stdout, Unknown]` may print and may do anything else.
+- **In a budget**, labels are compared literally. A `check` declaring `[Unknown]` accepts a call graded could not resolve but rejects a known `[Stdout]`, so it is stricter than "anything", never looser. `[_]` is the budget that allows anything.
+
+The guarantee has a precondition: every spec graded reads is current, and every line written by hand is true. A generated line — an `effects` line, an inferred `where returns` operator — is read as computed by the graded reading it, from the package's current source and the dependency, target and declaration facts it was derived from. A line an older graded generated, or one not regenerated after a code change, can under-charge its callers: a dependency spec stating `effects old_dep.tick : []` over a body that runs a printing callback reads `[]` for every consumer. `graded infer` regenerates a package's spec, and `graded infer --check` detects a stale spec in the package it runs on only, not in its dependencies. After upgrading graded, regenerate dependency specs (or obtain current ones) callees first, then run `graded infer` on your project.
+
+The escape hatch is a hint — an `assume` line or a wider budget turns the `[Unknown]` into a concrete grade graded can check. The patterns that produce `[Unknown]`, and how to resolve each, are catalogued in [LIMITATIONS.md](./LIMITATIONS.md).
 
 ## Step 7: The bigger picture — graded modal types
 
@@ -186,7 +204,7 @@ Effect *polymorphism* lets a grade contain variables: `map(f: [e]) : [e]` says "
 
 A higher-order parameter whose own type takes a function is *second-order*: its effect is not a set but a **function of a set**. Writing `Eff → Eff` for "effect operator," the parameter `action` in `with(action: fn(fn() -> Nil) -> a)` has kind `Eff → Eff`, and `with`'s effect is `action` *applied to* the effect of the callback it is handed — an **application** `action(Stdout)`, not a flat variable. This is exactly the type-level `*` vs `* → *` (kind) distinction lifted from types to effects: first-order effect polymorphism quantifies over `Eff`-kinded variables; second-order quantifies over `Eff → Eff`-kinded ones (System F-ω, transplanted to the effect algebra).
 
-graded represents this with a small term language (`EffectTerm`): labels and union (the union monoid above), plus variables, abstraction (`λcb. body`, an operator), and application (`op(arg)`). `EffectSet` is the **ground normal form** — a term with no abstractions, no applications, and no free higher-kinded variables. Resolution is **beta-reduction**: at a call site the operator argument is substituted for the variable and `op(arg)` reduces. Because the terms are finite and non-recursive (call-graph recursion is handled separately, by topological ordering and a cycle guard), reduction terminates without the unification/fixpoint machinery a full effect-inference system (Koka, Granule) would need — keeping graded a lightweight checker over the same semiring foundation. See [SECOND_ORDER_EFFECTS.md](./SECOND_ORDER_EFFECTS.md).
+graded represents this with a small term language (`EffectTerm`): labels and union (the union monoid above), plus variables, abstraction (`λcb. body`, an operator), and application (`op(arg)`). `EffectSet` is the **ground normal form** — a term with no abstractions, no applications, and no free higher-kinded variables. Resolution is **beta-reduction**: at a call site the operator argument is substituted for the variable and `op(arg)` reduces. Because the terms are finite and non-recursive (call-graph recursion is handled separately, by topological ordering and the fixed point above), reduction terminates without the unification/fixpoint machinery a full effect-inference system (Koka, Granule) would need — keeping graded a lightweight checker over the same semiring foundation. See [SECOND_ORDER_EFFECTS.md](./SECOND_ORDER_EFFECTS.md).
 
 ## Step 8: Privacy — the next checker
 
