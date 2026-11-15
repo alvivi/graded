@@ -6,8 +6,9 @@ higher-order parameters — using [glance](https://hexdocs.pm/glance/) syntax pl
 [girard](https://hexdocs.pm/girard) type information. When a function value flows
 through something it *can't* trace, graded falls back to the `[Unknown]` effect
 rather than guess. `[Unknown]` fails any concrete effect budget, so graded never
-silently *understates* a function's effects — but the patterns below need a
-hand-written annotation (or a wider budget) to resolve precisely.
+silently *understates* a function's effects relative to the declarations it reads,
+provided every spec it reads is current (section 14) — but the patterns below need
+a hand-written annotation (or a wider budget) to resolve precisely.
 
 Each section shows how the limitation manifests, then how to work around it.
 
@@ -425,21 +426,18 @@ assume app.write_log : [Stdout]
 ```
 
 A written per-function `assume` — yours, or the one a dependency's author
-ships — answers **alone**, even for an `@external` whose Gleam fallback body
-runs on some target: the line's author can see that body too, so the body's
-half is dropped from what callers pay and reported as suppressed wherever the
-charge is explained. A boundless line leaves the external's callbacks
+ships — answers for the targets its `@external` covers. Where the external's
+Gleam fallback body runs on another target your package is read on, callers
+pay the line's term unioned with what that body does, as a build for each
+target alone charges it. A boundless line leaves the external's callbacks
 conservatively charged — callers pay each function-typed argument's actual
 effects on top of the declared term, however the name is reached (called,
 passed to a helper, wired into a record field); a line with its own bound list
 answers for the callbacks too. That rule is the same for every declaring form,
 a catalog entry and a module-level `assume` included — it is about what a
-*boundless* line leaves unsaid, not about which kind of line said it. The catalog and a module-level `assume` still take the
-union of the declaration and the running body — the catalog describes a
-version graded's maintainers annotated, not necessarily the installed body,
-and a module blanket never named the function it would be silencing. The
-external's own `check` line weighs the walked body in every case: an `assume`
-changes what callers pay, never what the function's own line proves.
+*boundless* line leaves unsaid, not about which kind of line said it. The
+catalog and a module-level `assume` take the same union of the declaration and
+the running body, and the external's own `check` line weighs it too.
 
 For common third-party packages, the [bundled catalog](./REFERENCE.md#effect-catalog)
 already supplies these declarations, so you only need `assume` lines for your
@@ -559,12 +557,76 @@ fallback body of an `@external` a dependency declares is typed too, a package
 installed from hex included: its modules sit under the consumer's own
 `build/packages`, which is the tree the resolver reads.
 
-One thing a `@target` pair does not get separately: which of a function's
-parameters are function-typed is recorded by name, so two same-named halves of a
-pair that disagree about that are both read as the half the first run typed. The
-signature registry graded builds from glance has the same key, so this predates
-typing the second target; a call inside either half still resolves on its own
-run.
+One thing a `@target` pair does not get separately: a package that depends on
+yours reads one `effects` line for it. Your own package is analysed once per
+target, so its modules read each variant as itself, but the published line's
+parameters are those of the variant written first, with names and labels filled
+in from the others, and every variant's effects are stated over them. An effect
+a variant charges through a parameter that list lacks — the extra one of a
+variant taking more — reads `[Unknown]` for every caller reading the line.
+
+```gleam
+// src/app/pairs.gleam
+@target(erlang)
+pub fn run(first a: fn() -> Nil) -> Nil {
+  a()
+}
+
+@target(javascript)
+pub fn run(first a: fn() -> Nil, second b: fn() -> Nil) -> Nil {
+  b()
+}
+```
+
+```
+effects app/pairs.run(a: [a]) : [Unknown, a]
+```
+
+A call `pairs.run(first: loud)` from Erlang-only code in a package that depends
+on `app` reads `[Stdout, Unknown]`; the same call in `app` itself reads
+`[Stdout]`.
+
+A dependency's line over a name it defines once per target is written in the
+variant its own target configuration selects: one named target, that target's
+variant; defaulted targets, the variant a defaulted run reads; both targets, the
+variant written first, as above. A consumer translates the line into the
+variant its own target builds, matching each parameter by label, else by
+position: each bound moves with the variables its payload introduces, wherever
+the line uses them, and with what the callbacks they stand for return
+(`e.returns`), and a variable naming a parameter moves with that parameter. A
+catalog line over such a name, and the consumer's own `assume` line, are
+written in the same variant and translated the same way, on every target the
+consumer reads. The consumer's own line is weighed against the rules in the
+variant each target builds: where its variants differ so that it breaks them
+in one, that target refuses it with a warning naming the target, and the
+others read it. The dependency's own line describes only the variants its
+package was read on, so a consumer on a target the dependency's configuration
+does not name does not read it: the call answers as a callee nothing declares,
+`[Unknown]`, with the functions passed to it charged where it may run them, and
+`graded effect` on the function answers `[Unknown]` for that target and names
+it. That holds even where the other variant does exactly what the line says.
+
+```gleam
+// dep, whose gleam.toml names targets = ["javascript"]
+@target(erlang)
+pub fn run(first a: fn() -> Nil, second b: fn() -> Nil) -> Nil {
+  a()
+}
+
+@target(javascript)
+pub fn run(second a: fn() -> Nil, first b: fn() -> Nil) -> Nil {
+  a()
+}
+```
+
+```
+effects dep.run(a: [a]) : [a]
+```
+
+`dep.run(first: loud, second: quiet)` reads `[]` in a JavaScript consumer, and
+`[Stdout, Unknown]` in an Erlang one, where the Erlang variant runs `first`.
+Naming both targets in `dep`'s `gleam.toml` and regenerating its spec gives the
+Erlang consumer `[Stdout]`.
 
 ## 8. A `check` graded could not prove
 
@@ -696,3 +758,209 @@ Every fallback above is the conservative `[Unknown]`, never a silent `[]`: grade
 would rather flag a call it can't prove than let an effect slip through unchecked.
 When you hit one, the fix is always one of two escape hatches — an `assume` line
 (over a field, a function, or a whole module) or a wider declared budget.
+
+## 11. An inline closure charges the function that writes it
+
+An inline closure's body is charged to the function that writes it, wherever
+the closure is passed — to a callee that calls it, one that stores it, or one
+that never runs it. That is an over-approximation, so nothing is understated,
+but a function that only *describes* work pays for the work:
+
+```gleam
+import gleam/io
+
+fn store(f: fn() -> Nil) -> fn() -> Nil {
+  f
+}
+
+pub fn build() -> fn() -> Nil {
+  store(fn() { io.println("x") })   // [Stdout], though nothing prints here
+}
+```
+
+In a Lustre application this reaches `init` and `update`: an
+`effect.from(fn(dispatch) { … })` they return is charged to them, and the
+catalog's `effect.from` line charges a named callback's cost the same way, so
+`init` reads what its effects will do when Lustre performs them.
+
+**How to avoid it** — pass a **named function** instead of a closure. A
+reference handed to a callee whose answer does not run it costs the builder
+nothing — `store(loud)` reads `[]` — and nothing is trusted.
+
+`effect.from` is a callee whose line does charge its callback, so in a Lustre
+application the named callback needs a **per-function `assume`** in your own
+spec beside it:
+
+```
+assume lustre/effect.from(effect: [effect]) : []
+  where runs : [],
+        carries : [effect([])]
+```
+
+```gleam
+fn announce(_dispatch: fn(Msg) -> Nil) -> Nil {
+  io.println("x")
+}
+
+pub fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
+  #(model(), effect.from(announce))   // [] under the line above; [Stdout] without it
+}
+```
+
+The line trusts that whatever performs the effect is charged for it: here, a
+`main` that starts the application, which reads `[Unknown]` until graded
+follows effects through `lustre.application` (section 12). An inline closure
+stays charged to `init` under it.
+
+## 12. A function value graded cannot read, where it may run
+
+A value reaching code that may run it is charged what it carries (see
+[Function values in data](./REFERENCE.md#function-values-in-data)). Where graded
+cannot read that, the charge is `[Unknown]`, where before this version it was
+nothing at all:
+
+```gleam
+import app/ffi
+import gleam/dynamic/decode
+import gleam/json
+import gleam/list
+
+// `loud` prints; `quiet` does nothing
+
+// a list from a foreign producer, relayed to a closure that calls each element
+pub fn run_each() -> Nil {
+  list.each(ffi.handlers(), fn(f) { f() })      // [Unknown]
+}
+
+// a value of a type variable, handed to a foreign runner
+pub fn forward(x: a) -> Nil {
+  ffi.run_any(x)                                // [Unknown]
+}
+
+// a decoder parameter, run by `json.parse`
+pub fn parse(s: String, d: decode.Decoder(a)) {
+  json.parse(s, d)                              // [Unknown]
+}
+
+// a fold step that calls its accumulator: `fold`'s line maps no value into it
+fn step(acc: fn() -> Nil, _x: Int) -> fn() -> Nil {
+  acc()
+  loud
+}
+
+pub fn total() -> Nil {
+  let _ = list.fold([1, 2], quiet, step)        // [Unknown]
+  Nil
+}
+```
+
+The same holds for:
+
+- the result of a call no line describes, handed to code that runs it
+  (`run(get())` with `get` foreign), including a value of an external type or
+  `Dynamic` from a foreign producer;
+- a value from a function the type inference did not read (see
+  [`graded coverage`](./COVERAGE.md));
+- a named decoder continuation (`decode.field("a", decode.int, next_fn)`):
+  what `next_fn`'s result carries is unknown, so `decode.run` over it reads
+  `[Stdout, Unknown]` where an inline continuation reads `[Stdout]`;
+- a Lustre `main` that starts an application (`lustre.start(app(), "#app",
+  Nil)`): `lustre.application` does not describe what its result carries, so
+  `main` reads `[Process, Dom, Unknown]`;
+- a field of a parameter relayed by the standard library
+  (`list.each(["x"], cfg.on_item)` with `cfg` a parameter). Built in the same
+  function, the field reads what it was built with.
+- a function value in a record that a function of another module returns,
+  where that value is a closure, a private function of that module, or what
+  that function was handed: read outside the module that built the record,
+  it is `[Unknown]`;
+- a value large or deep enough that reading it reaches 10,000 values or 24
+  levels, or a `case` choosing among more than 1,000 distinct functions: what
+  is left is `[Unknown]`.
+
+**How to avoid it** — say what the value carries where graded cannot see it. A
+foreign producer's `assume` line takes a `carries` clause
+(`assume app/ffi.handlers : [] where carries : [Stdout]`), and a runner
+that only stores what it is handed takes `runs : []`. For a parameter, a
+higher-order function, or `lustre.application`, there is no clause yet that
+graded reads; widen the budget (`check app.parse : [_]`) for the functions
+that need it.
+
+## 13. A callback handed a value of a type variable
+
+A function that calls its own callback parameter with a value of a type
+variable reads `[Unknown]`, and so do its callers. The callback may run what it
+is handed, and graded cannot read what a value of a type variable carries.
+Before this version the call was charged what the callback does, and nothing
+for the value:
+
+```gleam
+import gleam/dict
+import gleam/io
+
+pub fn apply(f: fn(a) -> b, x: a) -> b {
+  f(x)                                          // [Unknown, f]
+}
+
+pub fn apply_int(f: fn(Int) -> Int, x: Int) -> Int {
+  f(x)                                          // [f]: an Int holds no function
+}
+
+// built for Erlang
+pub fn sum(d: dict.Dict(String, Int)) -> Int {
+  dict.fold(d, 0, fn(acc, _k, v) { acc + v })   // [Unknown]
+}
+
+pub fn print_keys(d: dict.Dict(String, Int)) -> Nil {
+  dict.fold(d, Nil, fn(_acc, k, _v) { io.println(k) })   // [Stdout, Unknown]
+}
+```
+
+`gleam/dict.fold` is the common case. On Erlang graded walks the Gleam body
+that runs there, which calls `fun` with the accumulator, the key and the value,
+all of type variables, so every call to `dict.fold` built for Erlang reads
+`[Unknown]` beside what its callback does. On JavaScript it reads what its
+callback does: `sum` reads `[]`. These read `[Unknown]` until a later release
+infers what those values carry.
+
+**How to avoid it** — give the value a concrete type where it can have one
+(`apply_int`). For `dict.fold`, fold the list `dict.values` or `dict.to_list`
+returns:
+
+```gleam
+import gleam/dict
+import gleam/list
+
+pub fn sum(d: dict.Dict(String, Int)) -> Int {
+  list.fold(dict.values(d), 0, fn(acc, v) { acc + v })   // []
+}
+```
+
+Otherwise widen the budget (`check app.sum : [_]`) for the functions that need
+it.
+
+## 14. A spec generated by an older graded
+
+graded reads every generated line in a spec — an `effects` line, an inferred
+`where returns` operator — as computed by the graded reading it. A dependency
+whose spec an older graded generated, or that was not regenerated after its
+code changed, can under-charge you:
+
+```gleam
+// old_dep's spec, written by an older graded: effects old_dep.tick : []
+pub fn tick() -> Nil {
+  list.each([loud], fn(f) { f() })   // prints
+}
+
+// your module
+pub fn go() -> Nil {
+  old_dep.tick()                     // [] until old_dep's spec is regenerated
+}
+```
+
+That is outside graded's guarantee, whose precondition is that every spec it
+reads is current. `graded infer --check` on the dependency reports its spec
+stale; on your own package it checks only your spec, and may pass.
+
+**How to avoid it** — after upgrading graded, regenerate dependency specs (or
+obtain current ones) callees first, then run `graded infer` on your project.

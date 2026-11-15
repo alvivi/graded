@@ -139,10 +139,14 @@ that produced it:
 (Each is what follows the em dash on the `targets:` line.)
 
 The `type inference:` line is a different fact: which targets girard actually
-*ran* on, primary first. girard runs once per target a definition in your own
+*ran* on, primary first. girard runs once per target a function in your own
 source is gated to by `@target`, and the readings merge per module, so a
-definition is typed on the target that builds it. A package with no gated
-function runs it once.
+definition is typed on the target that builds it. A package read on both
+targets also runs it on both where one name is defined once for each target:
+a constant, type alias or custom type of its own, or a definition a dependency
+module it imports exposes, a private alias its public signatures name
+included. A value is then proven to hold no function only where it
+does on both. A package with none of these runs it once.
 
 ```gleam
 // src/app.gleam — no gated function
@@ -180,7 +184,7 @@ pub fn go() -> Int {
 ```
 
 ```
-type inference: ran on erlang, javascript; a @target function gates the second run
+type inference: ran on erlang, javascript; a @target definition gates the second run
 
 functions: 2 typed, 0 skipped, 0 left out of every run, 0 unread
 constants: 1 typed, 0 skipped, 0 left out of every run, 0 unread
