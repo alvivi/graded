@@ -10,6 +10,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/set
 import gleeunit/should
 import graded/internal/effect_term
+import graded/internal/extract
 import graded/internal/latent.{Carries, FunctionFree}
 import graded/internal/typedefs
 import graded/internal/types.{
@@ -313,7 +314,7 @@ pub fn container_arguments_locate_positions_and_prove_nothing_test() {
         set.from_list(["erlang"]),
       ),
     )
-  let parameter = types.LocalRef("handlers")
+  let parameter = types.LocalRef("handlers", types.LexicalBinding(0))
   tables
   |> typed(span(1), named("gleam/dict", "Dict", [int_type(), thunk()]))
   |> latent_of(parameter, span(1))
@@ -467,7 +468,7 @@ pub fn an_inline_continuation_returning_success_carries_its_cost_test() {
   let continuation = closure(["a"], 30)
   let tail =
     types.CallResult(QualifiedName("gleam/dynamic/decode", "success"), [
-      argument("data", types.LocalRef("a"), span(31)),
+      argument("data", types.LocalRef("a", types.LexicalBinding(30)), span(31)),
     ])
   Tables(..decoder_tables(continuation), tails: [
     #(continuation, types.Component(span(32), tail)),
@@ -481,7 +482,7 @@ pub fn an_inline_continuation_returning_a_traced_decoder_test() {
   // 18b: the tail is a captured decoder built with a printing closure; traced,
   // it carries `[Stdout]`, and untraced (a parameter) it is unknown.
   let continuation = closure(["_"], 30)
-  let inner = types.LocalRef("inner")
+  let inner = types.LocalRef("inner", types.LexicalBinding(0))
   let traced =
     Tables(
       ..decoder_tables(continuation),
@@ -511,7 +512,7 @@ pub fn a_function_whose_result_holds_a_function_escapes_unknown_test() {
   // `get_outer()`, `outer`, a choice holding `outer` and a field holding it:
   // each costs `[]` once called, and what that call returns is undescribed.
   let get_outer = types.CallResult(QualifiedName("app", "get_outer"), [])
-  let field = types.ReceiverPath("cfg.run", None)
+  let field = types.ReceiverPath("cfg.run", types.LexicalBinding(0), None)
   let returning = girard.Fn([], thunk())
   let tables =
     Tables(
@@ -693,7 +694,7 @@ fn capture(target: ArgumentValue, label: Option(String)) -> ArgumentValue {
       types.CallArgument(
         position: 1,
         label: None,
-        value: types.LocalRef("b"),
+        value: types.LocalRef("b", types.LexicalBinding(0)),
         span: span(71),
       ),
     ],
@@ -853,4 +854,18 @@ pub fn a_constructor_reads_alike_on_both_paths_at_each_type_boundary_test() {
     #(FunctionFree, Carries(effect_term.pure())),
     #(latent.unknown(), FunctionFree),
   ])
+}
+
+// Values at a span no expression is written at are each read: none stands for
+// another.
+pub fn values_at_no_site_are_each_read_test() {
+  latent_of(
+    tables(),
+    types.Composite([
+      types.Component(extract.no_site, quiet()),
+      types.Component(extract.no_site, loud()),
+    ]),
+    span(1),
+  )
+  |> should.equal(Carries(labels(["Stdout", "Unknown"])))
 }

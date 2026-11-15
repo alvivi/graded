@@ -542,6 +542,7 @@ pub fn a_tie_selects_one_file_for_both_paths_test() {
     effects.load_catalog(
       support.catalog_files(root <> "/catalog"),
       root <> "/manifest.toml",
+      effects.trusting_reading(),
     )
   support.cleanup(root)
 

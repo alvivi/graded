@@ -98,11 +98,53 @@ fn labels(xs: List(String)) -> EffectSet {
 // The catalog entries for Lustre 5: app constructors are pure while the
 // runtime functions that mount an app carry their real effects.
 
+// The signatures of the lustre functions the fixture calls, as the installed
+// package declares them.
+const lustre_signatures =
+  "pub type App(start_args, model, message)
+
+pub type Effect(message)
+
+pub type Element(message)
+
+pub type Option(message)
+
+pub type Error
+
+@external(erlang, \"lustre\", \"application\")
+pub fn application(
+  init init: fn(start_args) -> #(model, Effect(message)),
+  update update: fn(model, message) -> #(model, Effect(message)),
+  view view: fn(model) -> Element(message),
+) -> App(start_args, model, message)
+
+@external(erlang, \"lustre\", \"component\")
+pub fn component(
+  init init: fn(start_args) -> #(model, Effect(message)),
+  update update: fn(model, message) -> #(model, Effect(message)),
+  view view: fn(model) -> Element(message),
+  options options: List(Option(message)),
+) -> App(start_args, model, message)
+
+@external(erlang, \"lustre\", \"start\")
+pub fn start(
+  app: App(start_args, model, message),
+  onto selector: String,
+  with arguments: start_args,
+) -> Result(Nil, Error)
+"
+
 pub fn lustre5_constructors_are_pure_test() {
   let directory =
     write_fixture(
       "/tmp/graded_release_lustre",
       list.append(project_files(), [
+        #("build/packages/packages.toml", "[packages]\nlustre = \"5.7.0\"\n"),
+        #(
+          "build/packages/lustre/gleam.toml",
+          "name = \"lustre\"\nversion = \"5.7.0\"\n",
+        ),
+        #("build/packages/lustre/src/lustre.gleam", lustre_signatures),
         #(
           "ui.gleam",
           "import lustre
@@ -148,9 +190,9 @@ fn options() {
   read_inferred_effect(cache, "comp")
   |> should.equal(pure())
 
-  // The effectful runtime functions still carry their effects.
+  // Starting runs the app, and what an application carries is undescribed.
   read_inferred_effect(cache, "mount")
-  |> should.equal(labels(["Dom", "Process"]))
+  |> should.equal(labels(["Dom", "Process", "Unknown"]))
 
   cleanup(directory)
 }

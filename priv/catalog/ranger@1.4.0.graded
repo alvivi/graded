@@ -1,3 +1,7 @@
 // ranger — pure lazy ranges
 
 assume ranger : []
+
+// ranger — what the reviewed functions do with the functions they are given
+assume ranger.create(validate: [validate], negate_step: [negate_step], add: [add], compare: [compare]) : [validate, negate_step, add, compare] where runs : []
+assume ranger.create_infinite(validate: [validate], add: [add], compare: [compare]) : [validate, add, compare] where runs : []

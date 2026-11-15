@@ -420,8 +420,13 @@ fn sibling() { Nil }"
   |> list.map(fn(l) { #(l.function, l.scope) })
   |> should.equal([
     #("sibling", types.ModuleDefinition),
-    #("shadowed", types.LexicalBinding),
-    #("destructured", types.LexicalBinding),
+    #("shadowed", types.LexicalBinding(0)),
+    #(
+      "destructured",
+      types.LexicalBinding(
+        span_within(src, "#(destructured", "destructured").start,
+      ),
+    ),
   ])
 }
 
@@ -1180,7 +1185,7 @@ fn target() {
   |> list.map(fn(c) { #(c.constructor, dict.to_list(c.fields)) })
   |> should.equal([
     #(types.BuiltConstructor(module: "app", variant: "Handler"), [
-      #("run", types.LocalRef("logger")),
+      #("run", types.LocalRef("logger", types.ModuleDefinition)),
     ]),
   ])
 }
@@ -1201,7 +1206,7 @@ fn target() {
 ",
   )
   |> list.map(fn(c) { dict.to_list(c.fields) })
-  |> should.equal([[#("run", types.LocalRef("logger"))]])
+  |> should.equal([[#("run", types.LocalRef("logger", types.ModuleDefinition))]])
 }
 
 pub fn construction_records_a_qualified_constructor_by_defining_module_test() {
@@ -1266,7 +1271,9 @@ fn target(base) {
 ",
   )
   |> list.map(fn(c) { #(c.constructor.variant, dict.to_list(c.fields)) })
-  |> should.equal([#("Handler", [#("run", types.LocalRef("logger"))])])
+  |> should.equal([
+    #("Handler", [#("run", types.LocalRef("logger", types.ModuleDefinition))]),
+  ])
 }
 
 pub fn construction_records_a_nested_site_test() {
@@ -2092,15 +2099,17 @@ pub fn target() { helper.run(Mixed(loud, keep: quiet)) }"
   let assert [arg] = call_arguments(src)
   arg.value
   |> should.equal(types.Constructed(
-    fields: dict.from_list([#("keep", types.LocalRef("quiet"))]),
+    fields: dict.from_list([
+      #("keep", types.LocalRef("quiet", types.ModuleDefinition)),
+    ]),
     components: [
       types.Component(
         span_within(src, construction, "loud"),
-        types.LocalRef("loud"),
+        types.LocalRef("loud", types.ModuleDefinition),
       ),
       types.Component(
         span_within(src, construction, "quiet"),
-        types.LocalRef("quiet"),
+        types.LocalRef("quiet", types.ModuleDefinition),
       ),
     ],
     coverage: types.WholeValue,
@@ -2119,11 +2128,14 @@ pub fn target() { helper.run(Pair(1, loud)) }"
   |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
   |> should.equal([
     #("left", types.Composite([])),
-    #("right", types.LocalRef("loud")),
+    #("right", types.LocalRef("loud", types.ModuleDefinition)),
   ])
   components
   |> list.map(fn(component) { component.value })
-  |> should.equal([types.Composite([]), types.LocalRef("loud")])
+  |> should.equal([
+    types.Composite([]),
+    types.LocalRef("loud", types.ModuleDefinition),
+  ])
   coverage |> should.equal(types.WholeValue)
 }
 
@@ -2139,7 +2151,8 @@ pub fn target() { helper.run(Outer(Inner(loud))) }"
   outer_component.span |> should.equal(span_of(src, "Inner(loud)"))
   let assert types.Constructed(components: [inner_component], ..) =
     outer_component.value
-  inner_component.value |> should.equal(types.LocalRef("loud"))
+  inner_component.value
+  |> should.equal(types.LocalRef("loud", types.ModuleDefinition))
 }
 
 pub fn a_factory_with_a_fixed_field_is_a_partial_view_test() {
@@ -2151,12 +2164,13 @@ fn loud() { Nil }
 pub fn target() { helper.run(make(loud)) }"
   let assert [arg] = call_arguments(src)
   let assert types.Constructed(fields:, components:, coverage:) = arg.value
-  dict.to_list(fields) |> should.equal([#("on_item", types.LocalRef("loud"))])
+  dict.to_list(fields)
+  |> should.equal([#("on_item", types.LocalRef("loud", types.ModuleDefinition))])
   components
   |> should.equal([
     types.Component(
       span_within(src, "make(loud)", "loud"),
-      types.LocalRef("loud"),
+      types.LocalRef("loud", types.ModuleDefinition),
     ),
   ])
   coverage |> should.equal(types.PartialValue)
@@ -2183,14 +2197,25 @@ fn loud() { Nil }
 pub fn target(base: Config) { helper.run(Config(..base, on_item: loud)) }"
   let assert [arg] = call_arguments(src)
   let assert types.Updated(base:, fields:, components:) = arg.value
-  base |> should.equal(types.LocalRef("base"))
-  dict.to_list(fields) |> should.equal([#("on_item", types.LocalRef("loud"))])
+  base
+  |> should.equal(types.LocalRef(
+    "base",
+    types.LexicalBinding(span_of(src, "pub fn target").start),
+  ))
+  dict.to_list(fields)
+  |> should.equal([#("on_item", types.LocalRef("loud", types.ModuleDefinition))])
   components
   |> should.equal([
-    types.Component(span_within(src, "..base", "base"), types.LocalRef("base")),
+    types.Component(
+      span_within(src, "..base", "base"),
+      types.LocalRef(
+        "base",
+        types.LexicalBinding(span_of(src, "pub fn target").start),
+      ),
+    ),
     types.Component(
       span_within(src, "on_item: loud", "loud"),
-      types.LocalRef("loud"),
+      types.LocalRef("loud", types.ModuleDefinition),
     ),
   ])
 }
@@ -2206,17 +2231,20 @@ pub fn target(rest) { helper.run([loud, ..rest], #(1, loud)) }"
     types.Composite([
       types.Component(
         span_within(src, "[loud, ..rest]", "loud"),
-        types.LocalRef("loud"),
+        types.LocalRef("loud", types.ModuleDefinition),
       ),
       types.Component(
         span_within(src, "..rest]", "rest"),
-        types.LocalRef("rest"),
+        types.LocalRef(
+          "rest",
+          types.LexicalBinding(span_of(src, "pub fn target").start),
+        ),
       ),
     ]),
   )
   let assert types.Composite([first, second]) = tuple_arg.value
   first.value |> should.equal(types.Composite([]))
-  second.value |> should.equal(types.LocalRef("loud"))
+  second.value |> should.equal(types.LocalRef("loud", types.ModuleDefinition))
 }
 
 pub fn a_let_bound_literal_keeps_its_elements_test() {
@@ -2233,8 +2261,30 @@ pub fn target() {
     types.Composite([
       types.Component(
         span_within(src, "[loud]", "loud"),
-        types.LocalRef("loud"),
+        types.LocalRef("loud", types.ModuleDefinition),
       ),
     ]),
   )
+}
+
+// A shorthand field of a record update has no span of its own.
+pub fn a_shorthand_update_field_has_no_site_test() {
+  let src =
+    "import helper
+pub type Duo { Duo(a: Int, b: fn() -> Nil) }
+fn loud() { Nil }
+pub fn target(value: Duo) {
+  let b = loud
+  helper.run(Duo(..value, b:))
+}"
+  let assert [arg] = call_arguments(src)
+  let assert types.Updated(components:, ..) = arg.value
+  components
+  |> list.map(fn(component) { component.span })
+  |> list.contains(extract.no_site)
+  |> should.be_true()
+  components
+  |> list.map(fn(component) { component.span })
+  |> list.contains(glance.Span(0, 0))
+  |> should.be_false()
 }

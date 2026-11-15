@@ -29,3 +29,75 @@ assume gleam/io.print : [Stdout]
 assume gleam/io.debug : [Stdout]
 assume gleam/io.print_error : [Stderr]
 assume gleam/io.println_error : [Stderr]
+
+// gleam_stdlib — what the reviewed functions do with the functions they are given
+assume gleam/bool.guard(alternative: [alternative]) : [alternative] where runs : []
+assume gleam/bool.lazy_guard(consequence: [consequence], alternative: [alternative]) : [consequence, alternative] where runs : []
+assume gleam/dict.combine(dict: [d], other: [d], fun: [fun]) : [fun] where runs : [], relay : fun(d, d)
+assume gleam/dict.do_fold(fun: [fun], dict: [dict]) : [fun] where runs : [], relay : fun(dict, dict, _)
+assume gleam/dict.do_map_values(f: [f], dict: [dict]) : [f] where runs : [], relay : f(dict, dict)
+assume gleam/dict.each(dict: [dict], fun: [fun]) : [fun] where runs : [], relay : fun(dict, dict)
+assume gleam/dict.filter(dict: [dict], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(dict, dict)
+assume gleam/dict.fold(dict: [dict], fun: [fun]) : [fun] where runs : [], relay : fun(_, dict, dict)
+assume gleam/dict.group(key: [key], list: [list]) : [key] where runs : [], relay : key(list)
+assume gleam/dict.map_values(dict: [dict], fun: [fun]) : [fun] where runs : [], relay : fun(dict, dict)
+assume gleam/dict.upsert(dict: [dict], fun: [fun]) : [fun] where runs : [], relay : fun(dict)
+assume gleam/dynamic/decode.field(field_decoder: [d], next: [n]) : [] where runs : [], carries : [d, n, n.returns]
+assume gleam/dynamic/decode.map(decoder: [d], transformer: [t]) : [] where runs : [], carries : [d, t, t.returns]
+assume gleam/dynamic/decode.map_errors(decoder: [d], transformer: [t]) : [] where runs : [], carries : [d, t, t.returns]
+assume gleam/dynamic/decode.new_primitive_decoder(decoding_function: [f]) : [] where runs : [], carries : [f, f.returns]
+assume gleam/dynamic/decode.optional_field(default: [v], field_decoder: [d], next: [n]) : [] where runs : [], carries : [v, d, n, n.returns]
+assume gleam/dynamic/decode.recursive(inner: [i]) : [] where runs : [], carries : [i, i.returns]
+assume gleam/dynamic/decode.run(decoder: [d]) : [] where runs : [d]
+assume gleam/dynamic/decode.subfield(field_decoder: [d], next: [n]) : [] where runs : [], carries : [d, n, n.returns]
+assume gleam/dynamic/decode.success(data: [d]) : [] where runs : [], carries : [d]
+assume gleam/dynamic/decode.then(decoder: [d], next: [n]) : [] where runs : [], carries : [d, n, n.returns]
+assume gleam/int.range(reducer: [reducer]) : [reducer] where runs : []
+assume gleam/list.all(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+assume gleam/list.any(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+assume gleam/list.chunk(list: [list], f: [f]) : [f] where runs : [], relay : f(list)
+assume gleam/list.count(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+assume gleam/list.drop_while(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+assume gleam/list.each(list: [list], f: [f]) : [f] where runs : [], relay : f(list)
+assume gleam/list.filter(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+assume gleam/list.filter_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+assume gleam/list.find(list: [list], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(list)
+assume gleam/list.find_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+assume gleam/list.flat_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+assume gleam/list.fold(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+assume gleam/list.fold_right(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+assume gleam/list.fold_until(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+assume gleam/list.group(list: [list], key: [key]) : [key] where runs : [], relay : key(list)
+assume gleam/list.index_fold(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list, _)
+assume gleam/list.index_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list, _)
+assume gleam/list.map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+assume gleam/list.map2(list1: [list1], list2: [list2], fun: [fun]) : [fun] where runs : [], relay : fun(list1, list2)
+assume gleam/list.map_fold(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+assume gleam/list.max(list: [list], compare: [compare]) : [compare] where runs : [], relay : compare(list, list)
+assume gleam/list.partition(list: [list], categorise: [categorise]) : [categorise] where runs : [], relay : categorise(list)
+assume gleam/list.reduce(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+assume gleam/list.scan(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+assume gleam/list.sort(list: [list], compare: [compare]) : [compare] where runs : [], relay : compare(list, list)
+assume gleam/list.split_while(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+assume gleam/list.take_while(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+assume gleam/list.try_each(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+assume gleam/list.try_fold(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+assume gleam/list.try_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+assume gleam/option.lazy_or(second: [second]) : [second] where runs : []
+assume gleam/option.lazy_unwrap(default: [default]) : [default] where runs : []
+assume gleam/option.map(option: [option], fun: [fun]) : [fun] where runs : [], relay : fun(option)
+assume gleam/option.then(option: [option], fun: [fun]) : [fun] where runs : [], relay : fun(option)
+assume gleam/order.lazy_break_tie(comparison: [comparison]) : [comparison] where runs : []
+assume gleam/order.reverse(orderer: [orderer]) : [orderer] where runs : []
+assume gleam/pair.map_first(pair: [pair], fun: [fun]) : [fun] where runs : [], relay : fun(pair)
+assume gleam/pair.map_second(pair: [pair], fun: [fun]) : [fun] where runs : [], relay : fun(pair)
+assume gleam/result.lazy_or(second: [second]) : [second] where runs : []
+assume gleam/result.lazy_unwrap(default: [default]) : [default] where runs : []
+assume gleam/result.map(result: [result], fun: [fun]) : [fun] where runs : [], relay : fun(result)
+assume gleam/result.map_error(result: [result], fun: [fun]) : [fun] where runs : [], relay : fun(result)
+assume gleam/result.try(result: [result], fun: [fun]) : [fun] where runs : [], relay : fun(result)
+assume gleam/result.try_recover(result: [result], fun: [fun]) : [fun] where runs : [], relay : fun(result)
+assume gleam/set.each(set: [set], fun: [fun]) : [fun] where runs : [], relay : fun(set)
+assume gleam/set.filter(set: [set], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(set)
+assume gleam/set.fold(set: [set], reducer: [reducer]) : [reducer] where runs : [], relay : reducer(_, set)
+assume gleam/set.map(set: [set], fun: [fun]) : [fun] where runs : [], relay : fun(set)

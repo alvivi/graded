@@ -41,8 +41,8 @@ fn check_source(
       "",
       annotations,
       support.knowledge_base(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations
@@ -214,8 +214,8 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
       "",
       support.knowledge_base(),
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -236,8 +236,8 @@ pub fn greet() { io.println(\"hi\") }"
       "",
       support.knowledge_base(),
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -257,8 +257,8 @@ fn helper() { io.println(\"x\") }"
       "",
       support.knowledge_base(),
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -271,7 +271,7 @@ fn helper() { io.println(\"x\") }"
 // fn-typed-param map recovers unannotated higher-order parameters.
 
 pub fn infer_uses_param_bounds_test() {
-  let source = "pub fn apply(f, x) { f(x) }"
+  let source = "pub fn apply(f, x: Int) { f(x) }"
   let assert Ok(module) = glance.module(source)
   let existing_checks = [
     EffectAnnotation(
@@ -293,8 +293,8 @@ pub fn infer_uses_param_bounds_test() {
       "",
       support.knowledge_base(),
       existing_checks,
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -313,7 +313,7 @@ pub fn infer_without_bounds_gets_unknown_test() {
       "",
       support.knowledge_base(),
       [],
-      signatures.empty(),
+      support.dependency_registry(),
       typeinfo.no_reading(),
       types.all_targets(),
     )
@@ -357,7 +357,7 @@ fn girard_fn_typed_for(
 pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
   // The enhancement: `f` has no `fn(...)` annotation, but girard infers it is a
   // function, so `apply` gets a polymorphic signature instead of [Unknown].
-  let source = "pub fn apply(f, x) { f(x) }"
+  let source = "pub fn apply(f, x: Int) { f(x) }"
   let assert Ok(module) = glance.module(source)
   let inferred =
     checker.infer(
@@ -365,9 +365,9 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
       "",
       support.knowledge_base(),
       [],
-      signatures.empty(),
+      support.dependency_registry(),
       typeinfo.ModuleReading(
-        ..typeinfo.no_reading(),
+        ..girard_reading(module),
         fn_typed: girard_fn_typed_for(module),
       ),
       types.all_targets(),
@@ -384,7 +384,7 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
 
 // Case 1: function that calls a parameter — effects come from the declared bound
 pub fn param_call_uses_bound_test() {
-  let source = "pub fn apply(f, x) { f(x) }"
+  let source = "pub fn apply(f, x: Int) { f(x) }"
   let annotation =
     EffectAnnotation(
       Check,
@@ -566,8 +566,8 @@ fn check_source_with_type_fields(
       "",
       annotations,
       kb,
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations
@@ -575,7 +575,9 @@ fn check_source_with_type_fields(
 
 // Typed param + registry entry → effects resolve correctly
 pub fn field_call_typed_with_registry_test() {
-  let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
+  // No call argument: with no types read, an argument is charged `[Unknown]`
+  // where the field call may run it.
+  let source = "pub fn view(handler: Handler) { handler.on_click() }"
   let type_fields = [
     types.FieldAnnotation(
       module: None,
@@ -620,7 +622,7 @@ fn check_source_with_girard(
       "",
       annotations,
       kb,
-      signatures.empty(),
+      support.dependency_registry(),
       reading,
       types.all_targets(),
     )
@@ -840,7 +842,7 @@ fn infer_effects_with_girard(
       types.CommittedSpec,
     ),
     [],
-    signatures.from_glance_module("", module),
+    with_dependencies(signatures.from_glance_module("", module)),
     girard_reading(module),
     types.all_targets(),
   )
@@ -863,8 +865,10 @@ pub fn wired_local_function_lift_uses_module_types_test() {
   let inferred = wired_receiver_effects(InvokeFirst)
   dict.get(inferred, "invoke")
   |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
+  // `perform`'s field call runs the `config` it is handed, a parameter whose
+  // functions are unknown.
   dict.get(inferred, "run_wired")
-  |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
+  |> should.equal(Ok(Specific(set.from_list(["Stdout", "Unknown"]))))
 }
 
 pub fn wired_local_function_lift_is_order_independent_test() {
@@ -924,7 +928,7 @@ pub fn wired_closure_field_uses_module_types_test() {
   // body contributes.
   infer_effects_with_girard(wired_operator_source, box_run_stdout())
   |> dict.get("run_closure")
-  |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
+  |> should.equal(Ok(Specific(set.from_list(["Stdout", "Unknown"]))))
 }
 
 pub fn wired_producer_call_field_uses_module_types_test() {
@@ -933,7 +937,7 @@ pub fn wired_producer_call_field_uses_module_types_test() {
   // resolve the field call inside the closure it returns.
   infer_effects_with_girard(wired_operator_source, box_run_stdout())
   |> dict.get("run_producer")
-  |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
+  |> should.equal(Ok(Specific(set.from_list(["Stdout", "Unknown"]))))
 }
 
 // Field effects exceed declared budget → violation
@@ -1009,9 +1013,9 @@ fn infer_field_annotation_typed(
   girard: Bool,
 ) -> EffectAnnotation {
   let assert Ok(module) = glance.module(source)
-  let registry = signatures.from_glance_module("", module)
+  let registry = with_dependencies(signatures.from_glance_module("", module))
   let reading = case girard {
-    False -> typeinfo.no_reading()
+    False -> girard_reading(module)
     True -> girard_reading(module)
   }
   let inferred =
@@ -1187,8 +1191,8 @@ pub fn annotate(options: Options) -> Nil {
       "",
       [annotation],
       support.knowledge_base(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -1317,8 +1321,8 @@ pub fn caller() -> Nil {
       "",
       [annotation],
       support.knowledge_base(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert Ok(v) = list.find(violations, fn(v) { v.function == "caller" })
@@ -1346,7 +1350,7 @@ fn check_source_with_assumes(
       annotations,
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations
@@ -1356,7 +1360,7 @@ fn check_source_with_assumes(
 pub fn external_resolves_effects_test() {
   let source =
     "import gleam/httpc
-pub fn fetch() { httpc.send(request) }"
+pub fn fetch() { httpc.send(\"request\") }"
   let assumes = [
     simple_assume("gleam/httpc", "send", ["Http"]),
   ]
@@ -1368,7 +1372,12 @@ pub fn fetch() { httpc.send(request) }"
       effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
       returns: None,
     )
-  check_source_with_assumes(source, [annotation], assumes, signatures.empty())
+  check_source_with_assumes(
+    source,
+    [annotation],
+    assumes,
+    support.dependency_registry(),
+  )
   |> should.equal([])
 }
 
@@ -1376,7 +1385,7 @@ pub fn fetch() { httpc.send(request) }"
 pub fn external_violates_check_test() {
   let source =
     "import gleam/httpc
-pub fn fetch() { httpc.send(request) }"
+pub fn fetch() { httpc.send(\"request\") }"
   let assumes = [
     simple_assume("gleam/httpc", "send", ["Http"]),
   ]
@@ -1388,9 +1397,24 @@ pub fn fetch() { httpc.send(request) }"
       effect_term.from_effect_set(Specific(set.new())),
       returns: None,
     )
-  check_source_with_assumes(source, [annotation], assumes, signatures.empty())
+  check_source_with_assumes(
+    source,
+    [annotation],
+    assumes,
+    support.dependency_registry(),
+  )
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
+}
+
+// The signatures of the catalogued package the test calls, as its installed
+// source declares them.
+fn shared_mod_registry() -> signatures.SignatureRegistry {
+  let assert Ok(module) =
+    glance.module(
+      "pub fn each(f f: fn() -> Nil) -> Nil {\n  f()\n}\n\npub fn disk() -> Nil {\n  Nil\n}\n",
+    )
+  with_dependencies(signatures.from_glance_module("shared/mod", module))
 }
 
 pub fn a_catalog_bounded_externals_bounds_reach_a_call_site_test() {
@@ -1413,6 +1437,7 @@ pub fn a_catalog_bounded_externals_bounds_reach_a_call_site_test() {
     effects.load_catalog(
       support.catalog_files(root <> "/catalog"),
       root <> "/manifest.toml",
+      effects.trusting_reading(),
     )
   let kb =
     effects.knowledge_base_from_catalog(
@@ -1425,6 +1450,7 @@ pub fn a_catalog_bounded_externals_bounds_reach_a_call_site_test() {
         type_fields:,
       ),
       dict.new(),
+      effects.trusting_reading(),
     )
   let source =
     "import shared/mod
@@ -1444,8 +1470,8 @@ pub fn run() { mod.each(f: mod.disk) }"
       "",
       [annotation],
       kb,
-      signatures.empty(),
-      typeinfo.no_reading(),
+      shared_mod_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -1469,8 +1495,8 @@ pub fn read_clock() { now() }"
       "ffi_mod",
       kb,
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert Ok(annotation) =
@@ -1568,8 +1594,8 @@ fn check_warnings(
       "",
       annotations,
       support.knowledge_base(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   warnings
@@ -1924,7 +1950,11 @@ pub fn check_no_false_positives_test() {
 
 // The effect a computed-receiver `caller` reports against a `(resolver: [label])
 // : []` bound, run in-memory. `Specific(∅)` when nothing violated.
-fn provenance_caller_effect(src: String, label: String) -> EffectSet {
+fn provenance_caller_effect(
+  src: String,
+  label: String,
+  knowledge_base: effects.KnowledgeBase,
+) -> EffectSet {
   let assert Ok(module) = glance.module(src)
   let annotation =
     EffectAnnotation(
@@ -1944,9 +1974,9 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
       module,
       "",
       [annotation],
-      support.knowledge_base(),
+      knowledge_base,
       signatures.from_glance_module("", module),
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   case list.find(violations, fn(v) { v.function == "caller" }) {
@@ -1973,11 +2003,20 @@ pub fn provenance_never_regresses_baseline_test() {
   // `Unknown ∈ P ⟹ Unknown ∈ W`. It cannot catch provenance resolving an
   // `Unknown` into an *incomplete* concrete set — that risk is held structurally
   // by reusing the trusted forwarding path and widening to Top.
+  let knowledge_base = support.knowledge_base()
   use program <- qcheck.given(generators.provenance_program_gen())
   let p =
-    effect_labels_of(provenance_caller_effect(program.traced, program.label))
+    effect_labels_of(provenance_caller_effect(
+      program.traced,
+      program.label,
+      knowledge_base,
+    ))
   let w =
-    effect_labels_of(provenance_caller_effect(program.untraced, program.label))
+    effect_labels_of(provenance_caller_effect(
+      program.untraced,
+      program.label,
+      knowledge_base,
+    ))
   let concrete = fn(labels) { set.delete(labels, "Unknown") }
   // Provenance never drops a real label vs the opaque baseline.
   set.is_subset(concrete(w), of: concrete(p)) |> should.be_true()
@@ -2224,8 +2263,8 @@ fn infer_single(source: String) -> EffectAnnotation {
       "",
       support.knowledge_base(),
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   ann
@@ -2330,8 +2369,8 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
       "",
       support.knowledge_base(),
       [existing],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   effect_term.to_effect_set(ann.effects)
@@ -2348,7 +2387,17 @@ pub fn apply(f, x) {
   f(x)
 }
 "
-  let ann = infer_single(source)
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] =
+    checker.infer(
+      module,
+      "",
+      support.knowledge_base(),
+      [],
+      support.dependency_registry(),
+      typeinfo.no_reading(),
+      types.all_targets(),
+    )
   effect_term.to_effect_set(ann.effects)
   |> should.equal(Specific(set.from_list(["Unknown"])))
   ann.params |> should.equal([])
@@ -2411,8 +2460,8 @@ pub fn new() {
         ),
       ],
       polymorphic_kb(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -2444,8 +2493,8 @@ pub fn new() {
         ),
       ],
       polymorphic_kb(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -2469,7 +2518,11 @@ pub fn new() {
     glance.module(
       "pub fn validate_range(value: Int, handler: fn(Int) -> e) -> Nil { Nil }",
     )
-  let known = signatures.from_glance_module("validation", signature_module)
+  let known =
+    with_dependencies(signatures.from_glance_module(
+      "validation",
+      signature_module,
+    ))
   let check_under = fn(registry) {
     let #(violations, _findings, _) =
       checker.check(
@@ -2486,12 +2539,12 @@ pub fn new() {
         ],
         polymorphic_kb(),
         registry,
-        typeinfo.no_reading(),
+        girard_reading(module),
         types.all_targets(),
       )
     violations
   }
-  check_under(signatures.empty()) |> should.equal([])
+  check_under(support.dependency_registry()) |> should.equal([])
   let assert [violation] = check_under(known)
   violation.explanation.actual
   |> should.equal(Specific(set.from_list(["Unknown"])))
@@ -2522,8 +2575,8 @@ pub fn new() {
         ),
       ],
       polymorphic_kb(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   list.length(violations) |> should.equal(1)
@@ -2546,8 +2599,8 @@ pub fn new() {
       "",
       polymorphic_kb(),
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   effect_term.to_effect_set(ann.effects) |> should.equal(Specific(set.new()))
@@ -2573,8 +2626,8 @@ pub fn new() {
       "",
       polymorphic_kb(),
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   effect_term.to_effect_set(ann.effects)
@@ -2642,8 +2695,8 @@ pub fn outer() -> MyError {
       "",
       support.knowledge_base(),
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert Ok(outer) = list.find(inferred, fn(a) { a.function == "outer" })
@@ -2668,8 +2721,8 @@ pub fn run() {
       "",
       two_callback_kb(),
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   effect_term.to_effect_set(ann.effects)
@@ -2685,7 +2738,7 @@ fn list_registry() -> signatures.SignatureRegistry {
   let source =
     "pub fn map(over l: List(a), with fun: fn(a) -> b) -> List(b) { l }"
   let assert Ok(module) = glance.module(source)
-  signatures.from_glance_module("gleam/list", module)
+  with_dependencies(signatures.from_glance_module("gleam/list", module))
 }
 
 fn infer_single_with_list(source: String) -> types.EffectAnnotation {
@@ -2697,7 +2750,7 @@ fn infer_single_with_list(source: String) -> types.EffectAnnotation {
       support.knowledge_base(),
       [],
       list_registry(),
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   ann
@@ -2754,7 +2807,7 @@ fn apply_twice_kb_and_registry() -> #(
   let reg =
     signatures.merge(
       list_registry(),
-      signatures.from_glance_module("mymod", at_module),
+      with_dependencies(signatures.from_glance_module("mymod", at_module)),
     )
   #(kb, reg)
 }
@@ -2785,7 +2838,7 @@ pub fn run(x: Int) {
       ],
       kb,
       reg,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations
@@ -2881,7 +2934,7 @@ pub fn mixed_tracked_and_closure_args_test() {
   let reg =
     signatures.merge(
       list_registry(),
-      signatures.from_glance_module("helpers", db_module),
+      with_dependencies(signatures.from_glance_module("helpers", db_module)),
     )
   let kb =
     support.knowledge_base()
@@ -2909,7 +2962,7 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
       kb,
       [],
       reg,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   ann.function |> should.equal("run")
@@ -2938,7 +2991,7 @@ pub type Task {
   Task(go: fn(fn(String) -> Nil, String) -> Nil)
 }
 fn run_it(action: fn(String) -> Nil, msg: String) -> Nil {
-  action(msg)
+  action(\"hello\")
 }
 pub fn main(msg: String) {
   let t = Task(go: run_it)
@@ -2946,7 +2999,7 @@ pub fn main(msg: String) {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let registry = signatures.from_glance_module("", module)
+  let registry = with_dependencies(signatures.from_glance_module("", module))
   let #(violations, _findings, _warnings) =
     checker.check(
       module,
@@ -2962,7 +3015,7 @@ pub fn main(msg: String) {
       ],
       support.knowledge_base(),
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations
@@ -3066,7 +3119,7 @@ pub fn caller() -> Nil {
         ),
       ]),
     )
-  let registry = signatures.from_glance_module("app", module)
+  let registry = with_dependencies(signatures.from_glance_module("app", module))
   let pass =
     EffectAnnotation(
       Check,
@@ -3082,7 +3135,7 @@ pub fn caller() -> Nil {
       [pass],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3101,7 +3154,7 @@ pub fn caller() -> Nil {
       [fail],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   { failed != [] } |> should.be_true()
@@ -3163,7 +3216,7 @@ fn second_order_kb_and_registry() -> #(
     "pub fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil { Nil }
 pub fn runner(cb: fn(String) -> Nil) -> Nil { Nil }"
   let assert Ok(sig_mod) = glance.module(sig_src)
-  let reg = signatures.from_glance_module("app", sig_mod)
+  let reg = with_dependencies(signatures.from_glance_module("app", sig_mod))
   let kb =
     support.knowledge_base()
     |> effects.with_inferred(
@@ -3214,7 +3267,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       [ann],
       kb,
       reg,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3243,7 +3296,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       [ann],
       kb,
       reg,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   { violations != [] } |> should.be_true()
@@ -3306,7 +3359,7 @@ fn lifted_declaration_violations(
     "import m\npub fn caller() -> Nil { m.with_tx(m.g) }",
     [caller_check(["Db"])],
     [g_line, ..annotation.extract_assumes(spec)],
-    signatures.from_glance_module("m", signature_module),
+    with_dependencies(signatures.from_glance_module("m", signature_module)),
   )
 }
 
@@ -3362,7 +3415,7 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       [ann],
       kb,
       reg,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3436,8 +3489,8 @@ pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
       "",
       kb,
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   ann.effects
@@ -3474,8 +3527,8 @@ pub fn run(
       "",
       kb,
       [],
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   ann.effects
@@ -3619,8 +3672,8 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
       "",
       [ann],
       support.knowledge_base(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4235,7 +4288,7 @@ pub fn caller() -> Nil {
       ]),
       types.ProjectInferred,
     )
-  let registry = signatures.from_glance_module("app", module)
+  let registry = with_dependencies(signatures.from_glance_module("app", module))
   let pass =
     EffectAnnotation(
       Check,
@@ -4251,7 +4304,7 @@ pub fn caller() -> Nil {
       [pass],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4270,7 +4323,7 @@ pub fn caller() -> Nil {
       [fail],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   { fail_violations != [] } |> should.be_true()
@@ -4312,7 +4365,7 @@ pub fn caller() -> Nil {
       effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
-  let registry = signatures.from_glance_module("app", module)
+  let registry = with_dependencies(signatures.from_glance_module("app", module))
   let pass =
     EffectAnnotation(
       Check,
@@ -4328,7 +4381,7 @@ pub fn caller() -> Nil {
       [pass],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4352,8 +4405,8 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
       "",
       support.knowledge_base(),
       [],
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   dict.get(returns, "pick")
@@ -4377,8 +4430,8 @@ pub fn make_printer() -> fn() -> Nil {
       "",
       support.knowledge_base(),
       [],
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert Ok(operator) = dict.get(returns, "make_printer")
@@ -4430,7 +4483,7 @@ pub fn caller() -> Nil {
       effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
-  let registry = signatures.from_glance_module("app", module)
+  let registry = with_dependencies(signatures.from_glance_module("app", module))
   let pass =
     EffectAnnotation(
       Check,
@@ -4446,7 +4499,7 @@ pub fn caller() -> Nil {
       [pass],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4465,7 +4518,7 @@ pub fn caller() -> Nil {
       [fail],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   { failed != [] } |> should.be_true()
@@ -4495,8 +4548,8 @@ pub fn pick(
       "",
       support.knowledge_base(),
       [],
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert Ok(operator) = dict.get(returns, "pick")
@@ -4621,7 +4674,7 @@ fn second_order_violations(
       [fs_read_external()],
       types.UserAssume,
     )
-  let registry = signatures.from_glance_module("app", module)
+  let registry = with_dependencies(signatures.from_glance_module("app", module))
   let ann =
     EffectAnnotation(
       Check,
@@ -4637,7 +4690,7 @@ fn second_order_violations(
       [ann],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations
@@ -4736,7 +4789,7 @@ fn infer_annotation(source: String, name: String) -> EffectAnnotation {
     module,
     name,
     support.knowledge_base(),
-    signatures.from_glance_module("m", module),
+    with_dependencies(signatures.from_glance_module("m", module)),
   )
 }
 
@@ -4756,7 +4809,7 @@ fn infer_annotation_with(
       knowledge_base,
       [],
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert Ok(annotation) = list.find(inferred, fn(a) { a.function == name })
@@ -4973,8 +5026,10 @@ fn make() -> fn(fn(fn() -> Nil) -> Nil) -> Nil {
   fn(action) { action(io.println) }
 }
 pub fn run() -> Nil { make()(fn(cb) { cb() }) }"
+  // The callback's call of what it is handed reads the printer the operator
+  // hands it; the higher-order argument itself stays unknown.
   infer_effect_set(source, "run")
-  |> should.equal(Specific(set.from_list(["Unknown"])))
+  |> should.equal(Specific(set.from_list(["Stdout", "Unknown"])))
 }
 
 // An immediately applied `case` of operators joins every branch's effect: the
@@ -6560,8 +6615,8 @@ pub fn run() -> Nil {
       "",
       [pure_check("run")],
       kb,
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6651,8 +6706,8 @@ pub fn new() {
       "",
       [pure_check("new")],
       polymorphic_kb(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6692,8 +6747,8 @@ pub fn new() {
       "",
       [pure_check("new")],
       kb,
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6722,8 +6777,8 @@ pub fn new() {
       "",
       [pure_check("new")],
       polymorphic_kb(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6757,8 +6812,8 @@ pub fn run() -> Nil {
       "",
       [pure_check("run")],
       support.knowledge_base(),
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert Ok(violation) =
@@ -6813,7 +6868,7 @@ fn explain_source(
       function,
       [bounds],
       support.knowledge_base(),
-      signatures.from_glance_module("app", module),
+      with_dependencies(signatures.from_glance_module("app", module)),
     )
   explanations
 }
@@ -6848,8 +6903,8 @@ pub fn run() {
       "run",
       [[]],
       knowledge_base,
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   total |> should.equal(effect_term.unknown())
@@ -6880,8 +6935,8 @@ pub fn go(r: Runner) -> Nil {
       "go",
       [[]],
       support.knowledge_base(),
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   total |> should.equal(types.TVar("r.run"))
@@ -6909,8 +6964,8 @@ pub fn run(r: Runner) -> Nil {
     module,
     "app",
     support.knowledge_base(),
-    signatures.from_glance_module("app", module),
-    typeinfo.no_reading(),
+    with_dependencies(signatures.from_glance_module("app", module)),
+    girard_reading(module),
     types.all_targets(),
   )
   |> dict.get("run")
@@ -6944,8 +6999,8 @@ pub fn run() -> Nil {
     module,
     "app",
     knowledge_base,
-    signatures.from_glance_module("app", module),
-    typeinfo.no_reading(),
+    with_dependencies(signatures.from_glance_module("app", module)),
+    girard_reading(module),
     types.all_targets(),
   )
   |> dict.get("run")
@@ -6987,7 +7042,7 @@ pub fn explain_shares_one_analysis_across_bound_sets_test() {
       "run",
       [[ParamBound("f", stdout_term())], [ParamBound("g", stdout_term())]],
       support.knowledge_base(),
-      signatures.from_glance_module("app", module),
+      with_dependencies(signatures.from_glance_module("app", module)),
     )
   // The parameter each set does not name keeps the identity bound inference
   // gives it, so it reports as the parameter it is rather than as `[Unknown]`.
@@ -7019,7 +7074,7 @@ pub fn explain_orders_same_start_by_end_test() {
   checker.call_kind(inner.call)
   |> should.equal(checker.ParameterCall("f"))
   checker.call_kind(outer.call)
-  |> should.equal(checker.ReturnedOperatorCall(QualifiedName("", "f")))
+  |> should.equal(checker.ComputedValueCall)
 }
 
 pub fn explain_reports_a_private_function_test() {
@@ -7085,7 +7140,7 @@ pub fn explain_misses_an_unknown_function_test() {
     "absent",
     [[]],
     support.knowledge_base(),
-    signatures.empty(),
+    support.dependency_registry(),
   )
   |> should.equal(Error(Nil))
 }
@@ -7107,13 +7162,19 @@ pub fn new() {
       "",
       [pure_check("new")],
       polymorphic_kb(),
-      signatures.empty(),
-      typeinfo.no_reading(),
+      support.dependency_registry(),
+      girard_reading(module),
       types.all_targets(),
     )
   let assert [violation] = violations
   let assert Ok([explanations]) =
-    explain_blocks(module, "new", [[]], polymorphic_kb(), signatures.empty())
+    explain_blocks(
+      module,
+      "new",
+      [[]],
+      polymorphic_kb(),
+      support.dependency_registry(),
+    )
   let assert Ok(explanation) =
     list.find(explanations, fn(e) { e.call == violation.explanation.call })
   explanation.reason |> should.equal(violation.explanation.reason)
@@ -7164,7 +7225,7 @@ fn closed_clause_setup(
       effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
-  #(kb, signatures.from_glance_module("dep", dep_module))
+  #(kb, with_dependencies(signatures.from_glance_module("dep", dep_module)))
 }
 
 fn closed_clause_violations(spec_line: String) -> List(types.Violation) {
@@ -7183,7 +7244,10 @@ fn noisy() -> Nil {
 "
   let assert Ok(module) = glance.module(source)
   let registry =
-    signatures.merge(signatures.from_glance_module("app", module), dep_registry)
+    signatures.merge(
+      with_dependencies(signatures.from_glance_module("app", module)),
+      dep_registry,
+    )
   let #(violations, _findings, _) =
     checker.check(
       module,
@@ -7191,7 +7255,7 @@ fn noisy() -> Nil {
       [pure_check("caller")],
       kb,
       registry,
-      typeinfo.no_reading(),
+      girard_reading(module),
       types.all_targets(),
     )
   violations
@@ -8186,8 +8250,8 @@ pub fn target(c) {
       "target",
       [[]],
       support.knowledge_base(),
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   explained.classifications
@@ -8222,8 +8286,8 @@ pub fn target(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
         ],
       ],
       support.knowledge_base(),
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   list.length(explained.blocks) |> should.equal(2)
@@ -8251,8 +8315,8 @@ fn returned_operators(
       "app",
       knowledge_base,
       [],
-      signatures.from_glance_module("app", module),
-      typeinfo.no_reading(),
+      with_dependencies(signatures.from_glance_module("app", module)),
+      girard_reading(module),
       types.all_targets(),
     )
   returns
@@ -8339,4 +8403,12 @@ pub fn make_g() -> fn(fn() -> Nil) -> Nil {
   returned_operators(source, kb)
   |> dict.get("make_g")
   |> should.equal(Ok(TAbs("_0", TLabels(set.from_list(["Db", "Unknown"])))))
+}
+
+// A registry beside the signatures of the catalogued packages graded installs,
+// as a run reads a project's dependencies.
+fn with_dependencies(
+  registry: signatures.SignatureRegistry,
+) -> signatures.SignatureRegistry {
+  signatures.merge(support.dependency_registry(), registry)
 }

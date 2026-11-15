@@ -4,10 +4,10 @@
 assume modem.initial_uri : [Dom]
 
 // modem — Effect constructors (pure data; Lustre's runtime performs them)
-assume modem.advanced : []
-assume modem.back : []
-assume modem.forward : []
-assume modem.init : []
-assume modem.load : []
-assume modem.push : []
-assume modem.replace : []
+assume modem.advanced : [] where runs : [], carries : [Dom]
+assume modem.back : [] where runs : [], carries : [Dom]
+assume modem.forward : [] where runs : [], carries : [Dom]
+assume modem.init : [] where runs : [], carries : [Dom]
+assume modem.load : [] where runs : [], carries : [Dom]
+assume modem.push : [] where runs : [], carries : [Dom]
+assume modem.replace : [] where runs : [], carries : [Dom]

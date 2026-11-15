@@ -4,11 +4,15 @@
 
 import glance
 import gleam/dict
+
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/order
+import gleam/result
 import gleam/set
 import gleam/string
 import gleeunit/should
+import graded
 import graded/internal/annotation
 import graded/internal/audit.{
   AuditError, ConstantCarries, ContainerResult, ContainerType, Coverage,
@@ -127,15 +131,7 @@ const sidecar =
   "covers 1.0.0 to 1.0.2\nreviewed fake/str.inspect\ncontainer fake/str.Box\n"
 
 fn installed(root: String, version: String) -> effects.BundledCatalog {
-  installed_with(
-    root,
-    version,
-    effects.SpecReading(
-      mode: types.Active,
-      refuses: fn(_) { False },
-      rebase: fn(_dep_root, file) { file },
-    ),
-  )
+  installed_with(root, version, effects.trusting_reading())
 }
 
 fn installed_with(
@@ -156,7 +152,7 @@ fn installed_with(
     ])
   let assert Ok(files) = effects.bundled_catalog_files(root <> "/catalog")
   let catalog =
-    effects.load_project_catalog_with(files, root <> "/manifest.toml", reading)
+    effects.load_project_catalog(files, root <> "/manifest.toml", reading)
   support.cleanup(root)
   catalog
 }
@@ -175,16 +171,6 @@ pub fn a_newer_installed_version_than_the_record_covers_is_unaudited_test() {
   catalog.audit |> should.equal(audit.empty())
 }
 
-pub fn the_record_is_not_read_without_the_latent_effect_rules_test() {
-  let catalog =
-    installed_with(
-      "build/audit_loader_inactive",
-      "1.0.1",
-      effects.inactive_reading(),
-    )
-  catalog.audit |> should.equal(audit.empty())
-}
-
 // What a call reads. No types are read, so a list running `loud` reads its
 // result unknown beside its cost.
 
@@ -194,20 +180,15 @@ fn knowledge_base(
   version: String,
   written: List(String),
 ) -> effects.KnowledgeBase {
-  let reading =
-    effects.SpecReading(
-      mode: types.Active,
-      refuses: fn(_) { False },
-      rebase: fn(_dep_root, file) { file },
-    )
+  let reading = effects.trusting_reading()
   let catalog =
     installed_with("build/audit_calls_" <> version, version, reading)
   let parse = fn(line) {
     let assert Ok(types.GradedFile(lines: [types.AssumeLine(assume, _)])) =
-      annotation.parse_file_with(line, types.Active)
+      annotation.parse_file(line)
     assume
   }
-  effects.knowledge_base_from_catalog_with(
+  effects.knowledge_base_from_catalog(
     "build/audit_no_packages",
     catalog,
     dict.new(),
@@ -318,8 +299,7 @@ pub fn every_bundled_record_names_what_its_catalog_file_answers_for_test() {
     let assert Ok(file) = audit.parse(text)
     let assert Ok(catalog_text) =
       simplifile.read(string.drop_end(path, 6) <> ".graded")
-    let assert Ok(catalog) =
-      annotation.parse_catalog_with(catalog_text, types.Active)
+    let assert Ok(catalog) = annotation.parse_catalog(catalog_text)
     let answered = answered_paths(catalog)
     list.each(file.entries, fn(entry) {
       case named(entry) {
@@ -368,4 +348,108 @@ fn named(entry: audit.AuditEntry) -> option.Option(types.QualifiedName) {
     ConstantCarries(name:, ..) -> Some(name)
     ContainerType(..) | Unreviewed(..) -> None
   }
+}
+
+// What the catalog publishes
+
+pub fn every_published_contract_is_the_one_its_record_staged_test() {
+  let directory = support.catalog_directory()
+  let assert Ok(paths) = simplifile.get_files(directory)
+  list.filter(paths, string.ends_with(_, ".audit"))
+  |> list.each(fn(path) {
+    let assert Ok(text) = simplifile.read(path)
+    let assert Ok(file) = audit.parse(text)
+    let staged =
+      audit.contracts(file)
+      |> list.filter_map(fn(assume) {
+        annotation.assume_qualified_name(assume)
+        |> result.map(fn(name) { #(name, assume) })
+      })
+    let catalog_path = string.drop_end(path, 6) <> ".graded"
+    let assert Ok(catalog_text) = simplifile.read(catalog_path)
+    let assert Ok(catalog) = annotation.parse_catalog(catalog_text)
+    let published =
+      annotation.extract_assumes(catalog)
+      |> list.filter(fn(assume) { assume.contract != types.no_contract })
+      |> list.filter_map(fn(assume) {
+        annotation.assume_qualified_name(assume)
+        |> result.map(fn(name) { #(name, assume) })
+      })
+    // Each line carrying a contract states exactly what the review staged,
+    // and every staged contract is published.
+    #(catalog_path, list.sort(published, by_name))
+    |> should.equal(#(catalog_path, list.sort(staged, by_name)))
+    // And each is a name the record reviews at a version it covers, so the
+    // catalog's no-run default speaks for it there.
+    let reviewed =
+      file.entries
+      |> list.flat_map(covered_versions)
+      |> list.fold(set.new(), fn(acc, version) {
+        set.union(acc, audit.applicable(file, version).reviewed)
+      })
+    list.each(published, fn(entry) {
+      #(entry.0, set.contains(reviewed, entry.0))
+      |> should.equal(#(entry.0, True))
+    })
+  })
+}
+
+fn by_name(
+  left: #(types.QualifiedName, types.AssumeAnnotation),
+  right: #(types.QualifiedName, types.AssumeAnnotation),
+) -> order.Order {
+  string.compare(
+    left.0.module <> "." <> left.0.function,
+    right.0.module <> "." <> right.0.function,
+  )
+}
+
+fn covered_versions(entry: audit.AuditEntry) -> List(audit.Version) {
+  let ends = fn(coverage: audit.Coverage) {
+    list.flat_map(coverage.ranges, fn(range) { [range.0, range.1] })
+  }
+  case entry {
+    ReviewedContract(covers:, ..)
+    | ReviewedName(covers:, ..)
+    | ContainerType(covers:, ..)
+    | ConstantCarries(covers:, ..)
+    | ContainerResult(covers:, ..) -> ends(covers)
+    Unreviewed(..) -> []
+  }
+}
+
+// On Erlang, `gleam/dict.map_values` and `gleam/dict.fold` run their Gleam
+// bodies, which hand a closure calling the caller's callback to the private
+// `do_map_values` and `do_fold`. The catalog publishes those helpers' contracts
+// so the walked body binds that closure through them, its parameters receiving
+// the dictionary's entries. `map_values` then reads exactly; `fold`'s closure
+// also passes its accumulator, which no relay maps, so calling the caller's
+// callback with it reads `[Unknown]`.
+pub fn a_private_helper_a_fallback_body_reaches_is_published_test() {
+  let knowledge_base = support.knowledge_base()
+  let do_fold = QualifiedName("gleam/dict", "do_fold")
+  effects.audited_catalog_answer(knowledge_base, do_fold) |> should.be_true
+  let assert Some(#(contract, _bounds)) =
+    effects.winning_contract(knowledge_base, do_fold)
+  contract.relays
+  |> should.equal([
+    types.Relay(callback: "fun", positions: [Some("dict"), Some("dict"), None]),
+  ])
+  let root =
+    support.write_fixture("build/audit_private_helper", [
+      #("gleam.toml", "name = \"app\"\nversion = \"1.0.0\"\n"),
+      #(
+        "manifest.toml",
+        "packages = [\n  { name = \"gleam_stdlib\", version = \"1.0.5\" },\n]\n",
+      ),
+      #(
+        "src/app.gleam",
+        "import gleam/dict\n\npub fn bump(d: dict.Dict(String, Int)) -> dict.Dict(String, Int) {\n  dict.map_values(d, fn(_key, value) { value + 1 })\n}\n\npub fn sum(d: dict.Dict(String, Int)) -> Int {\n  dict.fold(d, 0, fn(acc, _key, value) { acc + value })\n}\n",
+      ),
+    ])
+  support.install_stdlib(root)
+  let assert Ok(lines) = graded.inferred_lines(root)
+  support.cleanup(root)
+  lines
+  |> should.equal(["effects app.bump : []", "effects app.sum : [Unknown]"])
 }

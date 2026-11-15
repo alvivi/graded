@@ -1,3 +1,6 @@
 // snag — pure ad-hoc error values
 
 assume snag : []
+
+// snag — what the reviewed functions do with the functions they are given
+assume snag.map_error(result: [result], describer: [describer]) : [describer] where runs : [], relay : describer(result)

@@ -44,12 +44,10 @@ const own_spec_error =
 
 pub fn a_forbidden_bound_in_the_own_spec_is_an_error_naming_the_line_test() {
   let directory = own_spec_project("/tmp/graded_latent_own_spec")
-  let check = graded.check_project_with(directory, types.Active)
-  let effect =
-    graded.run_effect_with(directory, "proj.go", graded.Graded, types.Active)
-  let why = graded.run_why_with(directory, "proj.go", types.Active)
-  let infer = graded.run_infer_command_with(cli.DryRun, directory, types.Active)
-  let inactive = graded.check_project(directory)
+  let check = graded.check_project(directory)
+  let effect = graded.run_effect_formatted(directory, "proj.go", graded.Graded)
+  let why = graded.run_why(directory, "proj.go")
+  let infer = graded.run_infer_command(cli.DryRun, directory)
   support.cleanup(directory)
   let expected =
     graded.GradedParseError(
@@ -60,8 +58,6 @@ pub fn a_forbidden_bound_in_the_own_spec_is_an_error_naming_the_line_test() {
   effect |> should.equal(Error(expected))
   why |> should.equal(Error(expected))
   infer |> should.equal(Error(expected))
-  // Without the rules the line reads as it always did.
-  inactive |> should.be_ok
 }
 
 // A dependency's spec
@@ -87,7 +83,7 @@ const inferred = "// resolved from in-memory inference\n"
 
 fn consumer_answer(directory: String) -> String {
   let assert Ok(answer) =
-    graded.run_effect_with(directory, "proj.go", graded.Graded, types.Active)
+    graded.run_effect_formatted(directory, "proj.go", graded.Graded)
   support.cleanup(directory)
   answer
 }
@@ -154,8 +150,7 @@ pub fn a_bound_that_names_nothing_is_linted_under_the_rules_test() {
       #("proj.graded", "assume proj/ffi.run(value: []) : []\n"),
       #("src/proj/ffi.gleam", dep_ffi),
     ])
-  let assert Ok(active) = graded.check_project_with(directory, types.Active)
-  let assert Ok(inactive) = graded.check_project(directory)
+  let assert Ok(active) = graded.check_project(directory)
   support.cleanup(directory)
   let warnings = fn(results: List(types.CheckResult)) {
     list.flat_map(results, fn(result) { result.warnings })
@@ -164,5 +159,4 @@ pub fn a_bound_that_names_nothing_is_linted_under_the_rules_test() {
   |> should.equal([
     types.MeaninglessBoundWarning(function: "proj/ffi.run", param: "value"),
   ])
-  warnings(inactive) |> should.equal([])
 }

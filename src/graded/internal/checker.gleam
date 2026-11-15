@@ -311,9 +311,8 @@ fn infer_definition(
           effective_bounds(param_bounds, fn_typed_params),
           registry,
           reading,
-          dict.new(),
+          FunctionFrame,
           cache,
-          [],
           memo,
         )
       #(#(result.replace_error(returned, Nil), union_of(pairs)), memo)
@@ -366,7 +365,7 @@ fn definition_provenance(
 ) -> Result(types.ReturnProvenance, Nil) {
   case extract.return_provenance(definition.definition, context) {
     types.Opaque -> Error(Nil)
-    traced -> Ok(traced)
+    traced -> Ok(extract.exported_provenance(traced, context))
   }
 }
 
@@ -1595,9 +1594,8 @@ fn contributors(
           effective,
           registry,
           reading,
-          dict.new(),
+          FunctionFrame,
           cache,
-          [],
           memo,
         )
       // Each printed effect is groomed against the variables this function's
@@ -2576,9 +2574,8 @@ fn walk_component(
           synthetic_bounds,
           walk.registry,
           walk.reading,
-          dict.new(),
+          FunctionFrame,
           walk.cache,
-          [],
           memo,
         )
       }
@@ -2685,7 +2682,6 @@ fn module_import_context(
   )
   |> extract.with_module_path(module_path)
   |> extract.with_package_targets(package_targets)
-  |> extract.with_lat_mode(effects.lat_mode(knowledge_base))
   |> extract.with_factories(extract.factory_map(
     module_path,
     module,
@@ -2747,6 +2743,7 @@ fn closure_field_operator(
     registry,
     reading,
     dict.new(),
+    dict.new(),
     set.new(),
     scc_ids,
     new_memo(),
@@ -2784,6 +2781,7 @@ fn call_result_field_operator(
     registry,
     reading,
     [],
+    empty_lexicon(),
     scc_ids,
     new_memo(),
   ).0
@@ -4222,7 +4220,8 @@ fn charge_unseen_local(
 ) -> #(Memo, List(CollectedCall)) {
   let #(calls, memo) = collected
   use <- bool.guard(
-    when: dict.has_key(function_map, local_call.function),
+    when: local_call.scope == types.ModuleDefinition
+      && dict.has_key(function_map, local_call.function),
     return: #(memo, calls),
   )
   let #(charge, memo) =
@@ -4424,7 +4423,7 @@ type Memo {
     // sentinel-seeded (Fix D) — so a sentinel-flavored analysis never collides
     // with a real-flavored one.
     closures: dict.Dict(
-      #(Int, List(Int), List(String), List(String), List(String)),
+      #(Int, List(Int), List(#(String, Int)), List(String), List(String)),
       EffectTerm,
     ),
     // The targets every entry above was analysed on. Not part of any key —
@@ -4572,7 +4571,13 @@ fn recursion_edges(
   names: Set(String),
 ) -> Set(String) {
   let result = extract.extract_function_calls(function, context)
-  let local = list.map(result.local, fn(call) { call.function })
+  let local =
+    list.filter_map(result.local, fn(call) {
+      case call.scope {
+        types.ModuleDefinition -> Ok(call.function)
+        types.LexicalBinding(..) -> Error(Nil)
+      }
+    })
   let returned =
     list.filter_map(result.direct_ops, fn(op) {
       case op.callee.module {
@@ -4596,12 +4601,12 @@ fn recursion_edges(
 }
 
 // The same-module names reading a value may lift or call, wherever in the
-// value they sit: a reference, a capture's target, a same-module producer, and
-// the callables a closure or capture captured. A value written once is often
-// reached many times — a binding named twice holds its value twice — so each
-// component, argument and capture is read once per written site, and each
-// closure once per body: the sites in `seen` are skipped, and the ones read are
-// added.
+// value they sit: a reference no binding covered, a capture's target, a
+// same-module producer, and what a closure or capture captured. A value written
+// once is often reached many times — a binding named twice holds its value
+// twice — so each component, argument and capture is read once per written
+// site, and each closure once per body: the sites in `seen` are skipped, and
+// the ones read are added.
 fn value_references_at(
   value: types.ArgumentValue,
   seen: Set(#(Int, Int)),
@@ -4641,15 +4646,16 @@ fn value_references_at(
       seen,
     )
   }
-  let captured = fn(captures: List(#(String, types.ArgumentValue)), seen) {
+  let captured = fn(captures: List(types.Captured), seen) {
     list.fold(captures, #([], seen), fn(acc, capture) {
       let #(found, seen) = acc
-      let #(more, seen) = value_references_at(capture.1, seen)
+      let #(more, seen) = value_references_at(capture.value, seen)
       #(list.append(more, found), seen)
     })
   }
   case value {
-    types.LocalRef(name) -> #([name], seen)
+    types.LocalRef(name:, scope: types.ModuleDefinition) -> #([name], seen)
+    types.LocalRef(scope: types.LexicalBinding(..), ..) -> #([], seen)
     types.Capture(span:, target:, arguments: fixed, captures:, ..) -> {
       let site = #(span.start, span.end)
       use <- bool.guard(when: set.contains(seen, site), return: #([], seen))
@@ -5192,7 +5198,7 @@ fn function_field_sites(
   memo: Memo,
 ) -> #(FieldSiteReport, Memo) {
   let extracted = extract.extract_function_calls(function, context)
-  let parameters = named_function_params(function)
+  let parameters = frame_lexicon(function, FunctionFrame)
   let weigh = fn(state: #(FieldSiteReport, Memo), wired: WiredField) {
     let #(report, memo) = state
     let #(findings, templates, memo) =
@@ -5376,7 +5382,7 @@ fn matching_checks(
 fn weigh_wired_field(
   wired: WiredField,
   enclosing: String,
-  parameters: Set(String),
+  parameters: Lexicon,
   module_functions: Set(String),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
@@ -5390,8 +5396,7 @@ fn weigh_wired_field(
   // wires is whatever its callers pass. Held until the package-wide pass knows
   // whether any call reaches it.
   let from_parameter = case wired.value, wired.through {
-    types.LocalRef(name:), None ->
-      set.contains(parameters, name) && !set.contains(module_functions, name)
+    types.LocalRef(name:, scope:), None -> names_binder(parameters, name, scope)
     types.LocalRef(..), Some(_)
     | types.FunctionRef(..), _
     | types.Closure(..), _
@@ -5555,7 +5560,7 @@ fn template_calls(
         // arguments to a factory the body never calls -- the same precedence
         // the effects channel reads an unqualified call by.
         case call.scope {
-          types.LexicalBinding -> None
+          types.LexicalBinding(..) -> None
           types.ModuleDefinition ->
             template_of(
               dict.get(context.factories, call.function),
@@ -5681,8 +5686,10 @@ fn traceable_field_value(
     | types.Closure(..)
     | types.ReturnedOperator(..)
     | types.CallResult(..) -> True
-    types.LocalRef(name:) -> set.contains(module_functions, name)
-    types.ConstructorRef
+    types.LocalRef(name:, scope: types.ModuleDefinition) ->
+      set.contains(module_functions, name)
+    types.LocalRef(scope: types.LexicalBinding(..), ..)
+    | types.ConstructorRef
     | types.Choice(..)
     | types.ReceiverPath(..)
     | types.Constructed(..)
@@ -6247,6 +6254,108 @@ fn collect_reference_warnings(
 type OperatorShapes =
   dict.Dict(String, List(#(Int, List(Int))))
 
+// What a body is analysed as: a function on its own, or a closure lifted away
+// from where it was written.
+type Frame {
+  FunctionFrame
+  ClosureFrame(
+    // The closure's own parameters, bound at `site`.
+    params: List(String),
+    site: Int,
+    // The bindings its body names, as they stood where it was written.
+    captures: List(types.Captured),
+    // The operator parameters of the enclosing producers in scope, with the
+    // binder each one's bound is kept for.
+    ambient: OperatorShapes,
+    ambient_binders: dict.Dict(String, Int),
+  )
+}
+
+fn frame_ambient(frame: Frame) -> OperatorShapes {
+  case frame {
+    FunctionFrame -> dict.new()
+    ClosureFrame(ambient:, ..) -> ambient
+  }
+}
+
+// The parameters a body's references are answered from.
+type Lexicon {
+  Lexicon(
+    // For every parameter a bound in scope is kept for, the offset of its
+    // binder: a function's own parameters at its start, a lifted closure's at
+    // its body's start, an enclosing producer's operators where that producer
+    // binds them.
+    binders: dict.Dict(String, Int),
+    // The analysed function's own parameters, which its callers bind; none for
+    // a lifted closure.
+    own: Set(String),
+  )
+}
+
+// A lexicon no reference names a binder of.
+fn empty_lexicon() -> Lexicon {
+  Lexicon(binders: dict.new(), own: set.new())
+}
+
+fn frame_lexicon(function: Function, frame: Frame) -> Lexicon {
+  case frame {
+    FunctionFrame -> {
+      let own = named_function_params(function)
+      Lexicon(
+        binders: set.fold(own, dict.new(), fn(acc, name) {
+          dict.insert(acc, name, function.location.start)
+        }),
+        own:,
+      )
+    }
+    ClosureFrame(params:, site:, ambient_binders:, ..) ->
+      Lexicon(
+        binders: list.fold(params, ambient_binders, fn(acc, name) {
+          dict.insert(acc, name, site)
+        }),
+        own: set.new(),
+      )
+  }
+}
+
+// Whether a reference to `name` under `scope` names the binder the bounds in
+// `lexicon` are kept for: a dotted field path by its root's binder. A name no
+// binding covered names none.
+fn names_binder(
+  lexicon: Lexicon,
+  name: String,
+  scope: types.LocalScope,
+) -> Bool {
+  case scope {
+    types.ModuleDefinition -> False
+    types.LexicalBinding(binder:) ->
+      dict.get(lexicon.binders, path_root(name)) == Ok(binder)
+  }
+}
+
+// The first segment of a dotted path.
+fn path_root(path: String) -> String {
+  case string.split_once(path, ".") {
+    Ok(#(root, _)) -> root
+    Error(Nil) -> path
+  }
+}
+
+// The bound a reference to `name` under `scope` reads: the one kept for the
+// binder it names, none for any other.
+fn reference_bound(
+  bounds: List(ParamBound),
+  lexicon: Lexicon,
+  name: String,
+  scope: types.LocalScope,
+) -> Result(ParamBound, Nil) {
+  use <- bool.guard(
+    when: !names_binder(lexicon, name, scope),
+    return: Error(Nil),
+  )
+  list.find(bounds, fn(bound) { bound.name == name })
+}
+
 // Collect all (call, effect_term) pairs reachable from a function body. Each
 // effect is an `EffectTerm` — possibly still carrying free variables or operator
 // applications — reduced to an `EffectSet` only at the subset-check boundary.
@@ -6264,9 +6373,8 @@ fn collect_effects(
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  ambient_operators: OperatorShapes,
+  frame: Frame,
   cache: LocalCache,
-  captures: List(#(String, types.ArgumentValue)),
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
   let #(calls, memo) =
@@ -6279,9 +6387,8 @@ fn collect_effects(
       param_bounds,
       registry,
       reading,
-      ambient_operators,
+      frame,
       cache,
-      captures,
       memo,
     )
   use view <- with_view_in_reach(memo, context, #(calls, memo))
@@ -6290,7 +6397,7 @@ fn collect_effects(
   let in_scope =
     list.fold(
       param_bounds,
-      set.from_list(dict.keys(ambient_operators)),
+      set.from_list(dict.keys(frame_ambient(frame))),
       fn(acc, bound) {
         set.union(acc, effect_term.free_vars(bound.effects))
         |> set.insert(bound.name)
@@ -6312,9 +6419,8 @@ fn collect_effects(
           param_bounds,
           signatures.without_modules(registry, view.modules),
           reading,
-          ambient_operators,
+          frame,
           view.cache,
-          captures,
           view.memo,
         )
       #(
@@ -6423,28 +6529,29 @@ fn collect_view_effects(
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  // Operator parameters in scope from an *enclosing* function (a producer whose
-  // returned closure we're analysing), so a call to one becomes a curried
-  // operator application rather than `[Unknown]`. Empty for an ordinary function.
-  ambient_operators: OperatorShapes,
+  // A function on its own, or a closure lifted away from where it was written:
+  // its parameters, the bindings it captured, and the operator parameters in
+  // scope from an *enclosing* producer, so a call to one becomes a curried
+  // operator application rather than `[Unknown]`.
+  frame: Frame,
   // Memoized same-module body analyses, keyed by function name. Lets the local-
   // call path resolve a cacheable callee in O(1) instead of re-walking its body.
   cache: LocalCache,
-  // Callable bindings to seed into the body's lexical scope, for a closure being
-  // re-analysed away from its creation site. Empty for an ordinary function.
-  captures: List(#(String, types.ArgumentValue)),
   // Threaded memo state, extended as memoizable sub-analyses are computed.
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
-  let result =
-    extract.extract_function_calls_with_captures(function, context, captures)
-  let caller_param_names = named_function_params(function)
+  let result = case frame {
+    FunctionFrame -> extract.extract_function_calls(function, context)
+    ClosureFrame(params:, captures:, ..) ->
+      extract.extract_closure_calls(params, captures, function.body, context)
+  }
+  let lexicon = frame_lexicon(function, frame)
   let caller_field_bindings = field_bound_bindings(param_bounds)
   // The function's own fn-typed params join the inherited ambient operators, so
   // a closure in this body that captures one resolves it to its effect variable.
   let operator_params =
     dict.merge(
-      ambient_operators,
+      frame_ambient(frame),
       signatures.operator_param_shapes(function, cache.fn_alias_types),
     )
   let lift_operator_arg =
@@ -6456,30 +6563,27 @@ fn collect_view_effects(
       registry,
       reading,
       operator_params,
+      lexicon.binders,
       set.new(),
       cache,
     )
   // What calling code graded does not see charges for the arguments it is
   // handed: a caller's own parameter, or a name nothing resolves.
   let unseen_callee_charge = fn(args, memo) {
-    case effects.lat_mode(knowledge_base) {
-      types.Inactive -> #(effect_term.pure(), memo)
-      types.Active ->
-        deep_charge(
-          args,
-          latent_resolver(
-            context,
-            function_map,
-            knowledge_base,
-            registry,
-            reading,
-            param_bounds,
-            caller_param_names,
-            lift_operator_arg,
-          ),
-          memo,
-        )
-    }
+    deep_charge(
+      args,
+      latent_resolver(
+        context,
+        function_map,
+        knowledge_base,
+        registry,
+        reading,
+        param_bounds,
+        lexicon,
+        lift_operator_arg,
+      ),
+      memo,
+    )
   }
 
   // A field call whose receiver's name shadows an imported module is two
@@ -6535,7 +6639,7 @@ fn collect_view_effects(
           knowledge_base,
           visited,
           param_bounds,
-          caller_param_names,
+          lexicon,
           caller_field_bindings,
           registry,
           reading,
@@ -6555,7 +6659,12 @@ fn collect_view_effects(
   let #(memo, local_effects_nested) =
     list.map_fold(result.local, memo, fn(memo, local_call) {
       case
-        list.find(param_bounds, fn(param) { param.name == local_call.function })
+        reference_bound(
+          param_bounds,
+          lexicon,
+          local_call.function,
+          local_call.scope,
+        )
       {
         Ok(bound) -> {
           let synthetic_call =
@@ -6580,6 +6689,7 @@ fn collect_view_effects(
                 local_call.span,
                 knowledge_base,
                 param_bounds,
+                lexicon,
                 registry,
                 lift_operator_arg,
                 memo,
@@ -6624,7 +6734,7 @@ fn collect_view_effects(
             knowledge_base,
             visited,
             param_bounds,
-            caller_param_names,
+            lexicon,
             caller_field_bindings,
             registry,
             reading,
@@ -6659,6 +6769,7 @@ fn collect_view_effects(
           reading,
           result.call_args,
           param_bounds,
+          lexicon,
           registry,
           cache,
           lift_operator_arg,
@@ -6701,6 +6812,7 @@ fn collect_view_effects(
           registry,
           reading,
           param_bounds,
+          lexicon,
           cache,
           memo,
         )
@@ -6732,6 +6844,7 @@ fn collect_view_effects(
             op.span,
             knowledge_base,
             param_bounds,
+            lexicon,
             registry,
             lift_operator_arg,
             memo,
@@ -6773,6 +6886,7 @@ fn collect_view_effects(
           positions,
           knowledge_base,
           param_bounds,
+          lexicon,
           registry,
           lift_operator_arg,
           memo,
@@ -6785,6 +6899,7 @@ fn collect_view_effects(
           op.span,
           knowledge_base,
           param_bounds,
+          lexicon,
           registry,
           lift_operator_arg,
           memo,
@@ -6823,6 +6938,7 @@ fn collect_view_effects(
           positions,
           knowledge_base,
           param_bounds,
+          lexicon,
           registry,
           lift_operator_arg,
           memo,
@@ -6834,6 +6950,7 @@ fn collect_view_effects(
           op.span,
           knowledge_base,
           param_bounds,
+          lexicon,
           registry,
           lift_operator_arg,
           memo,
@@ -6873,6 +6990,7 @@ fn operator_argument_effect(
   nested_positions: List(Int),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -6902,6 +7020,7 @@ fn operator_argument_effect(
             nested_positions,
             knowledge_base,
             caller_param_bounds,
+            lexicon,
             registry,
             lift_operator_arg,
             memo,
@@ -6911,6 +7030,7 @@ fn operator_argument_effect(
             arg.value,
             knowledge_base,
             caller_param_bounds,
+            lexicon,
           ),
           memo,
         )
@@ -6932,6 +7052,7 @@ fn curried_operator_application(
   span: Span,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -6948,6 +7069,7 @@ fn curried_operator_application(
         nested_positions,
         knowledge_base,
         caller_param_bounds,
+        lexicon,
         registry,
         lift_operator_arg,
         memo,
@@ -6969,6 +7091,7 @@ fn invoked_parameter_effect(
   span: Span,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -6992,6 +7115,7 @@ fn invoked_parameter_effect(
               [],
               knowledge_base,
               caller_param_bounds,
+              lexicon,
               registry,
               lift_operator_arg,
               memo,
@@ -7037,30 +7161,21 @@ fn first_order_arg_effect(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  // A `LocalRef` naming a caller parameter bound is a forwarded *parameter*,
-  // which can shadow a same-module function of the same name. Resolve it
-  // through the bound, never by lifting the shadowed function — a param bound
-  // only ever names a parameter, so this can't misfire on a real function ref.
-  let shadows_param = case arg.value {
-    types.LocalRef(name) ->
-      list.any(caller_param_bounds, fn(b) { b.name == name })
-    _ -> False
-  }
-  case arg.value, shadows_param {
+  // A forwarded parameter resolves through its bound, never by lifting a
+  // same-module function it shadows: only a reference no binding covered names
+  // the module's own function.
+  case arg.value {
     // A closure or a same-module named function both lift to an operator (the
     // function reference via `lift_local_function`), whose discharge is the
-    // effect of calling it. A `LocalRef` that isn't a same-module function — a
-    // forwarded parameter with no bound — lifts to `Error(Nil)` and falls back
-    // to the param-bound lookup, so a named function resolves to its real
-    // effect instead of collapsing to [Unknown].
-    types.Closure(_, _, _), _
-    | types.Capture(..), _
-    | types.LocalRef(_), False
-    -> {
+    // effect of calling it.
+    types.Closure(_, _, _)
+    | types.Capture(..)
+    | types.LocalRef(scope: types.ModuleDefinition, ..) -> {
       let #(lifted, memo) = lift_operator_arg(arg.value, [], memo)
       case lifted {
         Ok(operator) -> #(discharge_operator(operator), memo)
@@ -7069,13 +7184,19 @@ fn first_order_arg_effect(
             arg.value,
             knowledge_base,
             caller_param_bounds,
+            lexicon,
           ),
           memo,
         )
       }
     }
-    _, _ -> #(
-      resolve_argument_effects(arg.value, knowledge_base, caller_param_bounds),
+    _ -> #(
+      resolve_argument_effects(
+        arg.value,
+        knowledge_base,
+        caller_param_bounds,
+        lexicon,
+      ),
       memo,
     )
   }
@@ -7172,7 +7293,7 @@ fn substitute_local_call_effects(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   caller_param_bounds: List(ParamBound),
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
@@ -7220,7 +7341,7 @@ fn substitute_local_call_effects(
                 knowledge_base,
                 visited,
                 caller_param_bounds,
-                caller_param_names,
+                lexicon,
                 caller_field_bindings,
                 registry,
                 reading,
@@ -7259,6 +7380,7 @@ fn substitute_local_call_effects(
           args,
           knowledge_base,
           caller_param_bounds,
+          lexicon,
           merged_registry,
           lift_operator_arg,
           memo,
@@ -7269,7 +7391,7 @@ fn substitute_local_call_effects(
           callee_name,
           TUnion(callee_terms),
           args,
-          caller_param_names,
+          lexicon,
           caller_param_bounds,
           merged_registry,
           function_map,
@@ -7343,7 +7465,7 @@ fn latent_resolver(
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
   caller_param_bounds: List(ParamBound),
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
 ) -> latent.Resolver(Memo) {
@@ -7354,6 +7476,7 @@ fn latent_resolver(
         positions,
         knowledge_base,
         caller_param_bounds,
+        lexicon,
         registry,
         lift_operator_arg,
         memo,
@@ -7370,7 +7493,7 @@ fn latent_resolver(
     lift: fn(value, arity, memo) {
       let positions = case arity, value {
         Some(arity), _ -> positions_up_to(arity)
-        None, types.LocalRef(name) ->
+        None, types.LocalRef(name:, scope: types.ModuleDefinition) ->
           case dict.get(function_map, name) {
             Ok(definition) ->
               positions_up_to(list.length(definition.definition.parameters))
@@ -7392,7 +7515,7 @@ fn latent_resolver(
         knowledge_base,
         registry,
         caller_param_bounds,
-        caller_param_names,
+        lexicon,
       )
     },
     closure_tail: fn(value) {
@@ -7426,25 +7549,23 @@ fn ground_value(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   caller_param_bounds: List(ParamBound),
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
 ) -> latent.Grounding {
-  let bound_named = fn(name) {
-    list.find(caller_param_bounds, fn(bound) { bound.name == name })
-  }
   case value {
-    types.LocalRef(name:) ->
+    types.LocalRef(name:, scope:) ->
       case
-        bound_named(name),
-        set.contains(caller_param_names, name),
+        reference_bound(caller_param_bounds, lexicon, name, scope),
+        scope,
         dict.has_key(function_map, name)
       {
         Ok(bound), _, _ -> latent.GroundedLatent(latent.Carries(bound.effects))
-        Error(Nil), True, _ -> latent.Ungrounded
-        Error(Nil), False, True -> latent.GroundedFunction
-        Error(Nil), False, False -> latent.Ungrounded
+        Error(Nil), types.ModuleDefinition, True -> latent.GroundedFunction
+        Error(Nil), types.ModuleDefinition, False
+        | Error(Nil), types.LexicalBinding(..), _
+        -> latent.Ungrounded
       }
-    types.ReceiverPath(path:, wired:) ->
-      case wired, bound_named(path) {
+    types.ReceiverPath(path:, root:, wired:) ->
+      case wired, reference_bound(caller_param_bounds, lexicon, path, root) {
         Some(traced), _ -> latent.GroundedValue(traced)
         None, Ok(bound) -> latent.GroundedLatent(latent.Carries(bound.effects))
         None, Error(Nil) -> latent.Ungrounded
@@ -7866,7 +7987,7 @@ fn substitute_at_call_site(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   caller_param_bounds: List(ParamBound),
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
@@ -7886,7 +8007,7 @@ fn substitute_at_call_site(
       knowledge_base,
       visited,
       caller_param_bounds,
-      caller_param_names,
+      lexicon,
       caller_field_bindings,
       registry,
       reading,
@@ -7895,58 +8016,53 @@ fn substitute_at_call_site(
       memo,
     )
   }
-  case effects.lat_mode(knowledge_base) {
-    types.Inactive -> substitute(effect, fallback, memo)
-    types.Active -> {
-      let args = call_args_for(call_args, call.span)
-      let resolver =
-        latent_resolver(
-          context,
-          function_map,
-          knowledge_base,
-          registry,
-          reading,
-          caller_param_bounds,
-          caller_param_names,
-          lift_operator_arg,
-        )
-      // A written line's own variables take what the latent-effect rules bind
-      // them to before anything else substitutes.
-      let #(contract, memo) =
-        cached_contract(knowledge_base, registry, call.name, memo)
-      let #(bindings, memo) = case contract {
-        None -> #(dict.new(), memo)
-        Some(contract) ->
-          latent.bind_contract(
-            call.name,
-            contract,
-            args,
-            dict.new(),
-            resolver,
-            memo,
-          )
-      }
-      // A term read in its self-referential form names parameters, not the
-      // line's variables: the bindings follow the same rename.
-      let bindings = case effects.declared_renames(knowledge_base, call.name) {
-        None -> bindings
-        Some(renames) -> renamed_bindings(bindings, renames)
-      }
-      let bind = fn(term) { subst_if(term, bindings) }
-      let #(term, fallback, memo) =
-        substitute(bind(effect), types.map_fallback(fallback, bind), memo)
-      let #(charge, memo) =
-        latent_call_charge(
-          call.name,
-          args,
-          knowledge_base,
-          registry,
-          resolver,
-          memo,
-        )
-      #(effect_term.normalize(TUnion([term, charge])), fallback, memo)
-    }
+  let args = call_args_for(call_args, call.span)
+  let resolver =
+    latent_resolver(
+      context,
+      function_map,
+      knowledge_base,
+      registry,
+      reading,
+      caller_param_bounds,
+      lexicon,
+      lift_operator_arg,
+    )
+  // A written line's own variables take what the latent-effect rules bind
+  // them to before anything else substitutes.
+  let #(contract, memo) =
+    cached_contract(knowledge_base, registry, call.name, memo)
+  let #(bindings, memo) = case contract {
+    None -> #(dict.new(), memo)
+    Some(contract) ->
+      latent.bind_contract(
+        call.name,
+        contract,
+        args,
+        dict.new(),
+        resolver,
+        memo,
+      )
   }
+  // A term read in its self-referential form names parameters, not the
+  // line's variables: the bindings follow the same rename.
+  let bindings = case effects.declared_renames(knowledge_base, call.name) {
+    None -> bindings
+    Some(renames) -> renamed_bindings(bindings, renames)
+  }
+  let bind = fn(term) { subst_if(term, bindings) }
+  let #(term, fallback, memo) =
+    substitute(bind(effect), types.map_fallback(fallback, bind), memo)
+  let #(charge, memo) =
+    latent_call_charge(
+      call.name,
+      args,
+      knowledge_base,
+      registry,
+      resolver,
+      memo,
+    )
+  #(effect_term.normalize(TUnion([term, charge])), fallback, memo)
 }
 
 // Bindings keyed by a line's variables, keyed instead by the parameters each
@@ -7970,8 +8086,8 @@ fn renamed_bindings(
   })
 }
 
-// The call-site substitution every reading shares: bind the callee's effect
-// variables to its arguments, forward field variables onto the caller's
+// The call-site substitution: bind the callee's effect variables to its
+// arguments, forward field variables onto the caller's
 // receivers, and discharge the caller's own field bounds.
 fn substitute_bindings(
   call: types.ResolvedCall,
@@ -7983,7 +8099,7 @@ fn substitute_bindings(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   caller_param_bounds: List(ParamBound),
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
@@ -8018,6 +8134,7 @@ fn substitute_bindings(
       args,
       knowledge_base,
       caller_param_bounds,
+      lexicon,
       registry,
       lift_operator_arg,
       memo,
@@ -8027,7 +8144,7 @@ fn substitute_bindings(
       call.name,
       effective_effects,
       args,
-      caller_param_names,
+      lexicon,
       caller_param_bounds,
       registry,
       function_map,
@@ -8137,7 +8254,7 @@ fn field_forwarding_bindings(
   callee_name: types.QualifiedName,
   effect: EffectTerm,
   args: List(types.CallArgument),
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   function_map: dict.Dict(String, Definition(Function)),
@@ -8158,7 +8275,7 @@ fn field_forwarding_bindings(
         var,
         callee_name,
         args,
-        caller_param_names,
+        lexicon,
         caller_param_bounds,
         registry,
         function_map,
@@ -8187,7 +8304,7 @@ fn field_forwarding_binding(
   var: String,
   callee_name: types.QualifiedName,
   args: List(types.CallArgument),
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   function_map: dict.Dict(String, Definition(Function)),
@@ -8215,7 +8332,7 @@ fn field_forwarding_binding(
         var,
         base,
         tail,
-        caller_param_names,
+        lexicon,
         caller_param_bounds,
         registry,
         function_map,
@@ -8270,7 +8387,7 @@ fn forwarded_var_binding(
   var: String,
   base: types.ArgumentValue,
   tail: String,
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   function_map: dict.Dict(String, Definition(Function)),
@@ -8291,7 +8408,7 @@ fn forwarded_var_binding(
         list.map(options, forwarded_binding_term(
           _,
           tail,
-          caller_param_names,
+          lexicon,
           caller_param_bounds,
         ))
       case option.all(terms) {
@@ -8321,14 +8438,7 @@ fn forwarded_var_binding(
     | types.Composite(..)
     | types.OtherExpression
     | types.Capture(..) ->
-      case
-        forwarded_binding_term(
-          base,
-          tail,
-          caller_param_names,
-          caller_param_bounds,
-        )
-      {
+      case forwarded_binding_term(base, tail, lexicon, caller_param_bounds) {
         Some(term) -> #(
           Some(FieldBinding(variable: var, term:, origin: None)),
           memo,
@@ -8469,10 +8579,10 @@ fn ground_field_operator(term: EffectTerm) -> option.Option(EffectTerm) {
 fn forwarded_binding_term(
   base: types.ArgumentValue,
   tail: String,
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   caller_param_bounds: List(ParamBound),
 ) -> option.Option(EffectTerm) {
-  use path <- option.then(forwarded_path(base, tail, caller_param_names))
+  use path <- option.then(forwarded_path(base, tail, lexicon))
   case is_field_path_var(path) {
     True -> Some(TVar(path))
     False ->
@@ -8494,11 +8604,11 @@ fn forwarded_binding_term(
 fn forwarded_path(
   value: types.ArgumentValue,
   tail: String,
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
 ) -> option.Option(String) {
   value_at_path(value, tail)
   |> option.from_result
-  |> option.then(caller_rooted_path(_, caller_param_names))
+  |> option.then(caller_rooted_path(_, lexicon))
 }
 
 // The receiver path an argument denotes when rooted at one of the caller's own
@@ -8507,18 +8617,17 @@ fn forwarded_path(
 // for any other value, or when the root isn't a caller parameter.
 fn caller_rooted_path(
   value: types.ArgumentValue,
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
 ) -> option.Option(String) {
-  use path <- option.then(case value {
-    types.LocalRef(name) -> Some(name)
-    types.ReceiverPath(path:, ..) -> Some(path)
+  use #(path, scope) <- option.then(case value {
+    types.LocalRef(name:, scope:) -> Some(#(name, scope))
+    types.ReceiverPath(path:, root:, ..) -> Some(#(path, root))
     _ -> None
   })
-  let root = case string.split_once(path, ".") {
-    Ok(#(root, _)) -> root
-    Error(Nil) -> path
-  }
-  case set.contains(caller_param_names, root) {
+  case
+    set.contains(lexicon.own, path_root(path))
+    && names_binder(lexicon, path, scope)
+  {
     True -> Some(path)
     False -> None
   }
@@ -8574,7 +8683,7 @@ fn grounded_receiver(
         Error(Nil) -> Ok(value)
       }
     types.FunctionRef(_)
-    | types.LocalRef(_)
+    | types.LocalRef(..)
     | types.ConstructorRef
     | types.Closure(..)
     | types.Choice(_)
@@ -8757,10 +8866,10 @@ fn value_at_path(
             Ok(wired) -> value_at_path(wired, rest)
             Error(Nil) -> value_at_path(base, tail)
           }
-        types.LocalRef(name) ->
-          Ok(types.ReceiverPath(name <> "." <> tail, None))
-        types.ReceiverPath(path:, ..) ->
-          Ok(types.ReceiverPath(path <> "." <> tail, None))
+        types.LocalRef(name:, scope:) ->
+          Ok(types.ReceiverPath(name <> "." <> tail, scope, None))
+        types.ReceiverPath(path:, root:, ..) ->
+          Ok(types.ReceiverPath(path <> "." <> tail, root, None))
         types.FunctionRef(_)
         | types.ConstructorRef
         | types.Closure(..)
@@ -8890,6 +8999,7 @@ fn bind_variables(
   args: List(types.CallArgument),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -8921,6 +9031,7 @@ fn bind_variables(
               callback_positions,
               knowledge_base,
               caller_param_bounds,
+              lexicon,
               registry,
               lift_operator_arg,
               memo,
@@ -8930,6 +9041,7 @@ fn bind_variables(
               arg,
               knowledge_base,
               caller_param_bounds,
+              lexicon,
               lift_operator_arg,
               memo,
             )
@@ -8941,12 +9053,10 @@ fn bind_variables(
           bound.effects |> effect_term.free_vars() |> set.to_list()
         // Under the latent-effect rules a variable several arguments share
         // takes the join of all of them.
-        let bind = case effects.lat_mode(knowledge_base) {
-          types.Active -> latent.insert_joined
-          types.Inactive -> dict.insert
-        }
         let acc =
-          list.fold(var_names, acc, fn(d, var) { bind(d, var, arg_effects) })
+          list.fold(var_names, acc, fn(d, var) {
+            latent.insert_joined(d, var, arg_effects)
+          })
         #(acc, memo)
       }
       None -> #(acc, memo)
@@ -8971,6 +9081,7 @@ fn operator_term_for_argument(
   positions: List(Int),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -9007,6 +9118,7 @@ fn operator_term_for_argument(
               positions,
               knowledge_base,
               caller_param_bounds,
+              lexicon,
               registry,
               lift_operator_arg,
               memo,
@@ -9020,7 +9132,12 @@ fn operator_term_for_argument(
       case lifted {
         Ok(operator) -> #(operator, memo)
         Error(Nil) -> #(
-          resolve_argument_effects(value, knowledge_base, caller_param_bounds),
+          resolve_argument_effects(
+            value,
+            knowledge_base,
+            caller_param_bounds,
+            lexicon,
+          ),
           memo,
         )
       }
@@ -9093,6 +9210,8 @@ fn build_lift_operator_arg(
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
   ambient_operators: OperatorShapes,
+  // The binder each in-scope parameter's bound is kept for, by name.
+  binders: dict.Dict(String, Int),
   sentinel_params: Set(String),
   cache: LocalCache,
 ) -> fn(types.ArgumentValue, List(Int), Memo) ->
@@ -9113,13 +9232,16 @@ fn build_lift_operator_arg(
             registry,
             reading,
             ambient_operators,
+            binders,
             sentinel_params,
             cache,
             memo,
           )
         #(Ok(operator), memo)
       }
-      types.LocalRef(name) ->
+      // A reference no binding covered names the module's own function; a
+      // lexical one names a parameter, which no definition answers for.
+      types.LocalRef(name:, scope: types.ModuleDefinition) ->
         // Guard against a function passed as an operator argument to itself:
         // `visited` already carries the call stack, so a name on it would loop.
         case set.contains(visited, name), dict.get(function_map, name) {
@@ -9160,6 +9282,7 @@ fn build_lift_operator_arg(
             registry,
             reading,
             [],
+            empty_lexicon(),
             cache,
             memo,
           )
@@ -9176,6 +9299,7 @@ fn build_lift_operator_arg(
           registry,
           reading,
           ambient_operators,
+          binders,
           sentinel_params,
           cache,
           build_lift_operator_arg(
@@ -9186,6 +9310,7 @@ fn build_lift_operator_arg(
             registry,
             reading,
             ambient_operators,
+            binders,
             sentinel_params,
             cache,
           ),
@@ -9212,6 +9337,7 @@ fn capture_operator(
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
   ambient_operators: OperatorShapes,
+  binders: dict.Dict(String, Int),
   sentinel_params: Set(String),
   cache: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
@@ -9220,7 +9346,14 @@ fn capture_operator(
 ) -> #(Result(EffectTerm, Nil), Memo) {
   let hole = latent.capture_hole
   let bounds = [ParamBound(hole, TVar(hole))]
-  let names = set.from_list([hole])
+  let names = case value {
+    types.Capture(span:, ..) ->
+      Lexicon(
+        binders: dict.from_list([#(hole, span.start)]),
+        own: set.from_list([hole]),
+      )
+    _ -> empty_lexicon()
+  }
   let #(called, memo) = case value {
     types.Capture(span:, target: types.FunctionRef(name:), ..) -> {
       let call = types.ResolvedCall(name:, span:)
@@ -9249,7 +9382,11 @@ fn capture_operator(
         |> with_substituted_fallback(concrete_fallback)
       #(Ok([CollectedCall(call:, resolution:)]), memo)
     }
-    types.Capture(span:, target: types.LocalRef(name:), ..) ->
+    types.Capture(
+      span:,
+      target: types.LocalRef(name:, scope: types.ModuleDefinition),
+      ..,
+    ) ->
       case
         dict.has_key(function_map, name),
         set.contains(memo.capturing, name) && !set.contains(visited, name)
@@ -9313,6 +9450,7 @@ fn capture_operator(
         registry,
         reading,
         ambient_operators,
+        binders,
         sentinel_params,
         cache,
         memo,
@@ -9406,6 +9544,7 @@ fn resolve_returned_operator(
   // The enclosing scope's caller bounds, threaded into `bind_producer_params`
   // for D1 (nested-producer precision). `[]` when resolving a top-level producer.
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   cache: LocalCache,
   memo: Memo,
 ) -> #(Result(#(EffectTerm, option.Option(LookupOrigin)), Nil), Memo) {
@@ -9519,6 +9658,7 @@ fn resolve_returned_operator(
               registry,
               reading,
               caller_param_bounds,
+              lexicon,
               summary,
               cache,
               memo,
@@ -9551,6 +9691,7 @@ fn bind_producer_params(
   // the nested bind resolves it to the sentinel — keeping it distinct from any
   // residual of the same name. `[]` for a top-level producer resolution.
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   // How the operator was produced, which is what says where its scoping bounds
   // come from on the cross-module path below.
   summary: effects.SummaryOrigin,
@@ -9643,6 +9784,7 @@ fn bind_producer_params(
       registry,
       reading,
       dict.new(),
+      dict.new(),
       set.new(),
       cache,
     )
@@ -9653,6 +9795,7 @@ fn bind_producer_params(
       args,
       knowledge_base,
       caller_param_bounds,
+      lexicon,
       effective_registry,
       lift,
       memo,
@@ -9785,6 +9928,7 @@ fn compute_view_returned_operator(
       // self-referential, so a residual leaked var of the same name cannot merge
       // with a genuine producer param before rename-back.
       let producer_bounds = list.map(ordered_params, sentinel_bound)
+      let lexicon = frame_lexicon(function, FunctionFrame)
       let lift =
         build_lift_operator_arg(
           context,
@@ -9794,6 +9938,7 @@ fn compute_view_returned_operator(
           registry,
           reading,
           producer_operators,
+          lexicon.binders,
           producer_params,
           cache,
         )
@@ -9803,6 +9948,7 @@ fn compute_view_returned_operator(
           positions,
           knowledge_base,
           producer_bounds,
+          lexicon,
           registry,
           lift,
           memo,
@@ -9885,7 +10031,7 @@ fn compute_returned_operator_result(
 // info missing) it falls back to abstracting over the first parameter.
 fn analyze_closure(
   params: List(String),
-  captures: List(#(String, types.ArgumentValue)),
+  captures: List(types.Captured),
   body: List(Statement),
   positions: List(Int),
   context: ImportContext,
@@ -9895,6 +10041,9 @@ fn analyze_closure(
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
   ambient_operators: OperatorShapes,
+  // The binder each in-scope parameter's bound is kept for, by name; the
+  // ambient operators' are read from it.
+  binders: dict.Dict(String, Int),
   // Producer parameters seeded as `$op$`-prefixed sentinels (Fix D), so a residual
   // leaked var can never merge with a genuine producer param of the same name.
   // Empty for every use other than computing a producer's returned-operator summary.
@@ -9907,12 +10056,15 @@ fn analyze_closure(
   // reaches it — exponential on a long `use` chain (a record decoder, say). A
   // closure is uniquely identified within a module by its body's source position,
   // and its result depends besides on the lifting `positions`, the in-scope
-  // ambient operators, which ancestors are visited, and which of those ambient
-  // operators are sentinel-seeded; key by all five.
+  // ambient operators and their binders, which ancestors are visited, and which
+  // of those ambient operators are sentinel-seeded; key by all five.
+  let ambient_binders = dict.take(binders, dict.keys(ambient_operators))
   let key = #(
     closure_body_start(body),
     positions,
-    list.sort(dict.keys(ambient_operators), string.compare),
+    list.sort(dict.to_list(ambient_binders), fn(left, right) {
+      string.compare(left.0, right.0)
+    }),
     list.sort(set.to_list(visited), string.compare),
     list.sort(set.to_list(sentinel_params), string.compare),
   )
@@ -9932,6 +10084,7 @@ fn analyze_closure(
           registry,
           reading,
           ambient_operators,
+          ambient_binders,
           sentinel_params,
           cache,
           memo,
@@ -9946,7 +10099,7 @@ fn analyze_closure(
 
 fn analyze_closure_uncached(
   params: List(String),
-  captures: List(#(String, types.ArgumentValue)),
+  captures: List(types.Captured),
   body: List(Statement),
   positions: List(Int),
   context: ImportContext,
@@ -9956,6 +10109,7 @@ fn analyze_closure_uncached(
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
   ambient_operators: OperatorShapes,
+  ambient_binders: dict.Dict(String, Int),
   sentinel_params: Set(String),
   cache: LocalCache,
   memo: Memo,
@@ -9980,6 +10134,7 @@ fn analyze_closure_uncached(
     list.fold(params, ambient_operators, fn(acc, param) {
       dict.delete(acc, param)
     })
+  let ambient_binders = dict.take(ambient_binders, dict.keys(ambient_operators))
   // Which closure parameters to abstract over: those at the operator's callback
   // positions (in order). `positions` is authoritative — derived from the
   // operator parameter's type at the call site — so an empty list means the
@@ -10032,9 +10187,14 @@ fn analyze_closure_uncached(
       bounds,
       registry,
       reading,
-      ambient_operators,
+      ClosureFrame(
+        params:,
+        site: closure_body_start(body),
+        captures:,
+        ambient: ambient_operators,
+        ambient_binders:,
+      ),
       cache,
-      captures,
       memo,
     )
   let body_term = union_of(body_pairs)
@@ -10071,20 +10231,7 @@ fn analyze_closure_uncached(
 // identity for the closure, used to memoize its analysis. An empty body (no
 // statements, hence nothing distinguishing) keys on `-1`.
 fn closure_body_start(body: List(Statement)) -> Int {
-  case body {
-    [statement, ..] -> statement_start(statement)
-    [] -> -1
-  }
-}
-
-fn statement_start(statement: Statement) -> Int {
-  case statement {
-    glance.Use(location:, ..) -> location.start
-    glance.Assignment(location:, ..) -> location.start
-    glance.Assert(location:, ..) -> location.start
-    // Every `glance.Expression` variant carries a `location` field.
-    glance.Expression(expression) -> expression.location.start
-  }
+  extract.closure_site(body)
 }
 
 fn lift_local_function(
@@ -10231,9 +10378,8 @@ fn lift_operator_miss(
       bounds,
       registry,
       reading,
-      dict.new(),
+      FunctionFrame,
       cache,
-      [],
       memo,
     )
   let body = union_of(body_pairs)
@@ -10413,12 +10559,13 @@ fn resolve_argument_effects(
   value: types.ArgumentValue,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
 ) -> EffectTerm {
   case value {
     types.FunctionRef(name) -> effects.declared_effects(knowledge_base, name)
     types.ConstructorRef -> effect_term.pure()
-    types.LocalRef(name) ->
-      case list.find(caller_param_bounds, fn(b) { b.name == name }) {
+    types.LocalRef(name:, scope:) ->
+      case reference_bound(caller_param_bounds, lexicon, name, scope) {
         Ok(bound) -> bound.effects
         Error(Nil) -> effect_term.unknown()
       }
@@ -10462,6 +10609,18 @@ fn resolve_unknown_local(
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
+  // A name a lexical binding covers is that binding, which no parameter bound
+  // and no traced callable answered for: a module function sharing its name
+  // says nothing about it.
+  use <- bool.guard(when: local_call.scope != types.ModuleDefinition, return: #(
+    [
+      plain_call(
+        sentinel_call(UnresolvedLocalCall(local_call.function), local_call.span),
+        effect_term.unknown(),
+      ),
+    ],
+    memo,
+  ))
   // Cycle detected — already analysing this function up the call stack. Return
   // empty rather than looping; the effects will be captured by the outer frame
   // that started the analysis.
@@ -10641,9 +10800,8 @@ fn catalog_answers_for(
           effective_bounds([], fn_typed_params),
           registry,
           reading,
-          dict.new(),
+          FunctionFrame,
           cache,
-          [],
           memo,
         )
       let #(published, _field_vars) =
@@ -10724,9 +10882,8 @@ fn memoized_local(
               nested_bounds,
               registry,
               reading,
-              dict.new(),
+              FunctionFrame,
               cache,
-              [],
               memo,
             )
           #(result, Memo(..memo, locals: dict.insert(memo.locals, key, result)))
@@ -10845,9 +11002,8 @@ fn collapsed_member(
           [],
           registry,
           reading,
-          dict.new(),
+          FunctionFrame,
           cache,
-          [],
           memo,
         )
       #(list.append(acc, member_effects), memo)
@@ -10974,7 +11130,7 @@ fn value_field_effect(
         // argument into the field): polymorphic in that parameter, so carry the
         // self marker rather than the `[Unknown]` a plain lookup would give —
         // letting the call site forward through it.
-        types.LocalRef(_) -> polymorphic_field_effect()
+        types.LocalRef(..) -> polymorphic_field_effect()
         // A field wired from a *call* (`Options(resolver: disk_resolver())`):
         // resolve the callee's returned-operator summary. `Error` preserves the
         // prior `[Unknown]` behaviour exactly.
@@ -11028,10 +11184,10 @@ fn known_field_effect(
 }
 
 // The qualified function a field value refers to, if any: a `FunctionRef`
-// directly, or a `LocalRef` naming one of the current module's own functions.
-// A `LocalRef` that isn't a module function is a parameter (or other local),
-// returned as `None` so the caller treats it as polymorphic. `None` too for
-// constructors and inline expressions.
+// directly, or a `LocalRef` no binding covered naming one of the current
+// module's own functions. A `LocalRef` to a binding is a parameter (or other
+// local), returned as `None` so the caller treats it as polymorphic. `None` too
+// for constructors and inline expressions.
 fn field_value_function(
   value: types.ArgumentValue,
   module_path: String,
@@ -11039,7 +11195,7 @@ fn field_value_function(
 ) -> option.Option(types.QualifiedName) {
   case value {
     types.FunctionRef(name:) -> Some(name)
-    types.LocalRef(name:) ->
+    types.LocalRef(name:, scope: types.ModuleDefinition) ->
       case set.contains(module_functions, name) {
         True -> Some(QualifiedName(module_path, name))
         False -> None
@@ -11058,6 +11214,7 @@ fn resolve_field_call(
   reading: typeinfo.ModuleReading,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   registry: SignatureRegistry,
   scc_ids: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
@@ -11088,13 +11245,6 @@ fn resolve_field_call(
   }
   case proven {
     Some(Ok(value)) -> {
-      // A field value that is one of the enclosing function's own parameters (a
-      // `LocalRef` naming it) is that parameter — even when a module function
-      // shares the name, since the parameter shadows it lexically. Excluding
-      // these names keeps a proven field value from borrowing a same-named
-      // module function's effect (an under-report); the parameter resolves
-      // polymorphically instead.
-      let caller_param_names = named_function_params(function)
       resolve_proven_field(
         value,
         field_call,
@@ -11103,7 +11253,7 @@ fn resolve_field_call(
         function_map,
         visited,
         reading,
-        caller_param_names,
+        lexicon,
         call_args,
         caller_param_bounds,
         registry,
@@ -11131,6 +11281,7 @@ fn resolve_field_call(
         reading,
         call_args,
         caller_param_bounds,
+        lexicon,
         registry,
         lift_operator_arg,
         memo,
@@ -11176,7 +11327,7 @@ fn resolve_proven_field(
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
   reading: typeinfo.ModuleReading,
-  caller_param_names: Set(String),
+  lexicon: Lexicon,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -11185,10 +11336,9 @@ fn resolve_proven_field(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(Resolution, Memo) {
-  // A name that is one of the enclosing function's parameters resolves to that
-  // parameter, not a same-named module function — the parameter shadows it.
-  let module_functions =
-    set.difference(set.from_list(dict.keys(function_map)), caller_param_names)
+  // A value naming a binding is that binding, never a same-named module
+  // function: only a reference no binding covered reads these.
+  let module_functions = set.from_list(dict.keys(function_map))
   let #(field_effect, origin, memo) =
     value_field_effect(
       value,
@@ -11226,6 +11376,7 @@ fn resolve_proven_field(
       call_args,
       knowledge_base,
       caller_param_bounds,
+      lexicon,
       registry,
       lift_operator_arg,
       memo,
@@ -11375,6 +11526,7 @@ fn resolve_unproven_field(
   reading: typeinfo.ModuleReading,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -11414,6 +11566,7 @@ fn resolve_unproven_field(
               call_args,
               knowledge_base,
               caller_param_bounds,
+              lexicon,
               registry,
               lift_operator_arg,
               memo,
@@ -11596,6 +11749,7 @@ fn resolve_field_effect(
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -11614,6 +11768,7 @@ fn resolve_field_effect(
       call_args_for(call_args, field_call.span),
       knowledge_base,
       caller_param_bounds,
+      lexicon,
     ),
     fallback,
     memo,
@@ -11634,6 +11789,7 @@ fn resolve_field_effect(
           args,
           knowledge_base,
           caller_param_bounds,
+          lexicon,
           registry,
           lift_operator_arg,
           memo,
@@ -11682,12 +11838,18 @@ fn apply_field_operator(
   args: List(types.CallArgument),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  lexicon: Lexicon,
 ) -> EffectTerm {
   let arg_terms =
     args
     |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
     |> list.map(fn(arg) {
-      resolve_argument_effects(arg.value, knowledge_base, caller_param_bounds)
+      resolve_argument_effects(
+        arg.value,
+        knowledge_base,
+        caller_param_bounds,
+        lexicon,
+      )
     })
   case operator {
     types.TUnion(members) ->
@@ -11840,8 +12002,7 @@ pub fn classify_definition(
   context: ImportContext,
   reading: typeinfo.ModuleReading,
 ) -> List(ClassificationCheck) {
-  let result =
-    extract.extract_function_calls_with_captures(function, context, [])
+  let result = extract.extract_function_calls(function, context)
   let split = split_shadowed_field_calls(result.field, reading, function)
   let moved =
     list.fold(split.module_reads, dict.new(), fn(acc, call) {

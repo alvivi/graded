@@ -29,6 +29,26 @@ import graded/internal/types.{
   NonCallbackKind, TAbs, TApp, TUnion, UnknownKind,
 }
 
+// The parameters of the closures being read through, each by its name and
+// binder, to what it receives. A reference reads an entry only where it names
+// that very binder.
+pub type Scope =
+  Dict(#(String, Int), Latent)
+
+// What a lexical reference receives in `scope`, `Error(Nil)` for a reference
+// to a binder no closure being read through has, or to a name no binding
+// covered.
+fn scope_entry(
+  scope: Scope,
+  name: String,
+  reference: types.LocalScope,
+) -> Result(Latent, Nil) {
+  case reference {
+    types.LexicalBinding(binder:) -> dict.get(scope, #(name, binder))
+    types.ModuleDefinition -> Error(Nil)
+  }
+}
+
 // Latents
 
 // What a value carries. `FunctionFree` is proven: the value holds no function.
@@ -171,11 +191,7 @@ const read_budget = 10_000
 // inside it are the same wherever it is reached, so each of those is read once
 // per depth and scope however many paths reach it.
 type Reading(memo) {
-  Reading(
-    memo: memo,
-    sites: Dict(#(Int, Int, Int, Dict(String, Latent)), Latent),
-    budget: Int,
-  )
+  Reading(memo: memo, sites: Dict(#(Int, Int, Int, Scope), Latent), budget: Int)
 }
 
 // Run a reading from a fresh state over `memo`.
@@ -213,7 +229,7 @@ fn spend(reading: Reading(memo)) -> Reading(memo) {
 pub fn argument_latent(
   value: ArgumentValue,
   span: Span,
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   memo: memo,
 ) -> #(Latent, memo) {
@@ -226,7 +242,7 @@ pub fn argument_latent(
 fn site_latent(
   value: ArgumentValue,
   span: Span,
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -249,7 +265,7 @@ fn site_latent(
 fn value_latent(
   value: ArgumentValue,
   span: Span,
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -354,7 +370,7 @@ fn type_part(type_: girard.Type, part: TypePart) -> Option(girard.Type) {
 fn evidence(
   value: ArgumentValue,
   span: Span,
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -373,8 +389,8 @@ fn evidence(
       }
     types.Closure(..) | types.Capture(..) ->
       function_latent(value, span, scope, resolver, reading, depth)
-    types.LocalRef(name:) ->
-      case dict.get(scope, name) {
+    types.LocalRef(name:, scope: reference) ->
+      case scope_entry(scope, name, reference) {
         Ok(latent) -> #(latent, reading)
         Error(Nil) -> grounded(value, span, scope, resolver, reading, depth)
       }
@@ -442,7 +458,7 @@ fn read_components(
 fn grounded(
   value: ArgumentValue,
   span: Span,
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -464,7 +480,7 @@ fn grounded(
 fn function_latent(
   value: ArgumentValue,
   span: Span,
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -486,7 +502,7 @@ pub fn resolve_callback(
   value: ArgumentValue,
   span: Span,
   positions: Option(List(Latent)),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   memo: memo,
 ) -> #(Callback, memo) {
@@ -497,7 +513,7 @@ fn callback_at(
   value: ArgumentValue,
   span: Span,
   positions: Option(List(Latent)),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -533,8 +549,8 @@ fn callback_at(
           )
         },
       )
-    types.LocalRef(name:) ->
-      case dict.get(scope, name) {
+    types.LocalRef(name:, scope: reference) ->
+      case scope_entry(scope, name, reference) {
         // A closure parameter called as a callback costs what it carries.
         Ok(latent) -> {
           let #(result, reading) =
@@ -612,7 +628,7 @@ fn grounded_callback(
   value: ArgumentValue,
   span: Span,
   positions: Option(List(Latent)),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -637,7 +653,7 @@ fn lifted_callback(
   value: ArgumentValue,
   span: Span,
   positions: Option(List(Latent)),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -668,7 +684,7 @@ fn callback_result(
   value: ArgumentValue,
   span: Span,
   positions: Option(List(Latent)),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
@@ -676,7 +692,7 @@ fn callback_result(
   let #(returned, reading) = shape_at(span, ReturnedType, resolver, reading)
   case returned == typedefs.NoArrows, value {
     True, _ -> #(FunctionFree, reading)
-    False, types.Closure(params:, ..) -> {
+    False, types.Closure(params:, body:, ..) -> {
       let tail = resolver.closure_tail(value)
       case tail {
         None -> #(unknown(), reading)
@@ -684,6 +700,7 @@ fn callback_result(
           tail_latent(
             component,
             params,
+            extract.closure_site(body),
             positions,
             scope,
             resolver,
@@ -692,12 +709,16 @@ fn callback_result(
           )
       }
     }
-    False, types.Capture(target: types.FunctionRef(name:), ..) -> {
+    False, types.Capture(target: types.FunctionRef(name:), span:, ..) -> {
       let #(carried, reading) =
         carries_reading(
           name,
           capture_arguments(value),
-          dict.insert(scope, capture_hole, position_latent(positions, 0)),
+          dict.insert(
+            scope,
+            #(capture_hole, span.start),
+            position_latent(positions, 0),
+          ),
           resolver,
           reading,
         )
@@ -730,19 +751,22 @@ fn capture_positions(
 }
 
 // The name a capture's own parameter takes while its call is read: no Gleam
-// identifier can spell it.
+// identifier can spell it. It is bound at the capture's own start.
 pub const capture_hole = "$hole"
 
 // The arguments a capture calls its target with: the ones it was written with
 // and its own parameter at the hole.
 pub fn capture_arguments(value: ArgumentValue) -> List(CallArgument) {
   case value {
-    types.Capture(hole:, label:, arguments:, ..) ->
+    types.Capture(span:, hole:, label:, arguments:, ..) ->
       [
         types.CallArgument(
           position: hole,
           label:,
-          value: types.LocalRef(capture_hole),
+          value: types.LocalRef(
+            capture_hole,
+            types.LexicalBinding(binder: span.start),
+          ),
           span: extract.no_site,
         ),
         ..arguments
@@ -765,20 +789,21 @@ pub fn capture_arguments(value: ArgumentValue) -> List(CallArgument) {
   }
 }
 
-// An inline closure's tail read in its own scope: each parameter receives what
-// the callee passes it there.
+// An inline closure's tail read in its own scope: each parameter, bound at
+// `site`, receives what the callee passes it there.
 fn tail_latent(
   tail: types.Component,
   params: List(String),
+  site: Int,
   positions: Option(List(Latent)),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
   depth: Int,
 ) -> #(Latent, Reading(memo)) {
   let inner =
     list.index_fold(params, scope, fn(scope, param, index) {
-      dict.insert(scope, param, position_latent(positions, index))
+      dict.insert(scope, #(param, site), position_latent(positions, index))
     })
   site_latent(tail.value, tail.span, inner, resolver, reading, depth + 1)
 }
@@ -833,7 +858,7 @@ fn apply_loop(operator: EffectTerm, arguments: List(Latent)) -> EffectTerm {
 pub fn call_carries(
   callee: QualifiedName,
   args: List(CallArgument),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   memo: memo,
 ) -> #(Option(Latent), memo) {
@@ -843,7 +868,7 @@ pub fn call_carries(
 fn carries_reading(
   callee: QualifiedName,
   args: List(CallArgument),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
 ) -> #(Option(Latent), Reading(memo)) {
@@ -877,7 +902,7 @@ pub fn bind_contract(
   callee: QualifiedName,
   contract: CalleeContract,
   args: List(CallArgument),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   memo: memo,
 ) -> #(Dict(String, EffectTerm), memo) {
@@ -888,7 +913,7 @@ fn contract_reading(
   callee: QualifiedName,
   contract: CalleeContract,
   args: List(CallArgument),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
 ) -> #(Dict(String, EffectTerm), Reading(memo)) {
@@ -946,7 +971,7 @@ fn bind_callback(
   parameter: ContractParameter,
   arg: CallArgument,
   relays: List(types.Relay),
-  scope: Dict(String, Latent),
+  scope: Scope,
   resolver: Resolver(memo),
   reading: Reading(memo),
 ) -> #(Dict(String, EffectTerm), Reading(memo)) {

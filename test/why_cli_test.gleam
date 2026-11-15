@@ -36,7 +36,7 @@ pub fn explains_a_checked_function_test() {
     "impure_view.view has effects [Stdout]",
     "declared check impure_view.view : []",
     "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
-    "  calls gleam/list.map with effects [] (from a module-level `assume` in gleam_stdlib's catalog entry)",
+    "  calls gleam/list.map with effects [] (from gleam_stdlib's catalog entry)",
     "",
     "typed resolutions",
     "  io.println: typed resolution module gleam/io.println (agrees)",
@@ -495,7 +495,7 @@ pub fn explains_a_shadowed_receiver_as_a_module_call_test() {
   |> should.equal([
     "shadow_receiver.shadowed has effects [Stdout]",
     "declared check shadow_receiver.shadowed : [Stdout]",
-    "  calls gleam/result.try with effects [] (from a module-level `assume` in gleam_stdlib's catalog entry)",
+    "  calls gleam/result.try with effects [Stdout] (from gleam_stdlib's catalog entry)",
     "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
     "",
     "typed resolutions",

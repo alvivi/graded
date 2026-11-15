@@ -212,7 +212,7 @@ pub fn main() -> Nil {
         let #(name, directory, format) = arguments
         // The decoder already answers in the renderer's own vocabulary, so
         // the CLI takes the internal path rather than converting twice.
-        effect_answer(directory, name, types.Inactive)
+        effect_answer(directory, name)
         |> result.map(answer.render(_, format))
       })
 
@@ -366,7 +366,7 @@ pub fn pack_project(project_root: String) -> Result(String, GradedError) {
   // package whose whole spec reads as no annotations at all. What goes into the
   // archive is the file's own bytes — the entry is the spec verbatim, never a
   // re-render of the parse.
-  use spec <- result.try(case read_spec_on_disk(resolved_spec, types.Inactive) {
+  use spec <- result.try(case read_spec_on_disk(resolved_spec) {
     // No spec and an empty one carry the same instruction: there is nothing to
     // ship yet. `read_spec_on_disk` reads a missing file as no bytes, which
     // every other command treats as a project to infer from scratch and `pack`
@@ -472,10 +472,7 @@ pub type ModuleReport {
 /// declarations, and field annotations, then reports one `ModuleReport` per
 /// source file, plus one for the spec file itself where a spec line is dead.
 pub fn run(directory: String) -> Result(List(ModuleReport), GradedError) {
-  use #(spec_file, per_target) <- result.map(check_project_targets(
-    directory,
-    types.Inactive,
-  ))
+  use #(spec_file, per_target) <- result.map(check_project_targets(directory))
   target_reports(spec_file, per_target)
 }
 
@@ -567,7 +564,7 @@ fn module_report(result: CheckResult) -> ModuleReport {
 pub fn classification_checks(
   directory: String,
 ) -> Result(List(types.ClassificationCheck), GradedError) {
-  use ctx <- result.map(load_project_context(directory, types.Inactive))
+  use ctx <- result.map(load_project_context(directory))
   context_classification_checks(ctx)
 }
 
@@ -613,19 +610,7 @@ fn target_classification_checks(
 pub fn check_project(
   directory: String,
 ) -> Result(List(CheckResult), GradedError) {
-  check_project_with(directory, types.Inactive)
-}
-
-// `check_project` under the given latent-effect reading.
-@internal
-pub fn check_project_with(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(List(CheckResult), GradedError) {
-  use #(spec_file, per_target) <- result.map(check_project_targets(
-    directory,
-    mode,
-  ))
+  use #(spec_file, per_target) <- result.map(check_project_targets(directory))
   case per_target {
     [#(_, results)] -> results
     _ ->
@@ -640,9 +625,8 @@ pub fn check_project_with(
 // on several one at a time, or of its one reading, beside its spec file.
 fn check_project_targets(
   directory: String,
-  mode: types.LatMode,
 ) -> Result(#(String, List(#(Option(String), List(CheckResult)))), GradedError) {
-  use ctx <- result.try(load_project_context(directory, mode))
+  use ctx <- result.try(load_project_context(directory))
   let spec_file = ctx.sources.cfg.spec_file
   let per_target = case ctx.per_target {
     [] -> [#(None, context_check_results(ctx, None))]
@@ -1500,8 +1484,6 @@ type ProjectSources {
     parsed: List(#(String, glance.Module)),
     index: Dict(String, #(String, glance.Module)),
     package_root: String,
-    // The latent-effect reading the run chose before it parsed anything.
-    mode: types.LatMode,
     // The spec file's text as read, for a message pointing at one of its lines.
     spec_text: String,
   )
@@ -1511,12 +1493,11 @@ type ProjectSources {
 // runs no inference: the cheap half of `load_project_context`.
 fn load_project_sources(
   directory: String,
-  mode: types.LatMode,
 ) -> Result(ProjectSources, GradedError) {
   let SourceScope(analysed: directory, reported:) = source_scope(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
-  use #(spec_text, spec) <- result.try(read_spec_on_disk(cfg.spec_file, mode))
+  use #(spec_text, spec) <- result.try(read_spec_on_disk(cfg.spec_file))
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.map(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
@@ -1528,7 +1509,6 @@ fn load_project_sources(
     parsed:,
     index:,
     package_root:,
-    mode:,
     spec_text:,
   )
 }
@@ -1539,9 +1519,8 @@ fn load_project_sources(
 // knowledge base.
 fn load_project_context(
   directory: String,
-  mode: types.LatMode,
 ) -> Result(ProjectContext, GradedError) {
-  use sources <- result.try(load_project_sources(directory, mode))
+  use sources <- result.try(load_project_sources(directory))
   project_context(sources)
 }
 
@@ -1756,10 +1735,10 @@ fn context_base(
   shared: Shared,
   per_target: Bool,
 ) -> Result(#(ContextBase, Shared), GradedError) {
-  let ProjectSources(cfg:, spec:, index:, package_root:, mode:, spec_text:, ..) =
+  let ProjectSources(cfg:, spec:, index:, package_root:, spec_text:, ..) =
     sources
   // Parsed first, and read once the signatures can weigh its lines.
-  use parsed_catalog <- result.try(shared_catalog(shared, package_root, mode))
+  use parsed_catalog <- result.try(shared_catalog(shared, package_root))
   let declared_modules = annotation.module_assume_modules(spec)
   // The package's targets under both readings, which together decide whether a
   // function is foreign code or the Gleam body is its only implementation, and
@@ -1803,22 +1782,18 @@ fn context_base(
   // the project's own lines are all read through it.
   let publishers = publisher_configurations(dep_sources, shared.publishers)
   let readings = pair_readings(dep_sources, package_targets, publishers)
-  // The project's own lines, weighed as the run reads them under the
-  // latent-effect rules. Run alone on its targets, a line the rules forbid is
-  // an error; one of several runs refuses it and leaves the verdict to them
-  // all.
-  let refused = case mode {
-    types.Active ->
-      own_contract_violations(spec, spec_text, readings, registry, !per_target)
-    types.Inactive -> []
-  }
+  // The project's own lines, weighed as the run reads them. Run alone on its
+  // targets, a line the rules forbid is an error; one of several runs refuses
+  // it and leaves the verdict to them all.
+  let refused =
+    own_contract_violations(spec, spec_text, readings, registry, !per_target)
   use Nil <- result.try(case per_target {
     False -> own_contract_error(cfg.spec_file, refused)
     True -> Ok(Nil)
   })
   let reported =
     reported_refusals(refused, shared.builds, dep_sources, cfg.targets)
-  let reading = spec_reading(mode, registry, readings)
+  let reading = spec_reading(registry, readings)
   // Read once and kept: the knowledge base is built from it and the spec lint
   // weighs the same entries.
   let catalog = effects.read_parsed_catalog(parsed_catalog, reading)
@@ -2168,7 +2143,7 @@ fn check_one_file(
 // name, so a closure over `dependency_name` is what crosses the boundary.
 fn lint_context(context: ProjectContext) -> lint.Context {
   let ProjectContext(
-    sources: ProjectSources(spec:, index:, mode:, ..),
+    sources: ProjectSources(spec:, index:, ..),
     stale_assumes:,
     stale_returns_clauses:,
     catalog:,
@@ -2190,7 +2165,6 @@ fn lint_context(context: ProjectContext) -> lint.Context {
     dependency_sources_are_complete: fn() {
       package_tree.is_complete(local_packages)
     },
-    mode:,
     resolve_bounds: contract.resolve_bounds(_, registry),
     reader_view: consumer_view(context.pair_readings),
   )
@@ -2221,18 +2195,16 @@ pub fn placement_module_files(package_root: String) -> Dict(String, String) {
 pub fn context_placement_files(
   directory: String,
 ) -> Result(Dict(String, String), GradedError) {
-  use ctx <- result.map(load_project_context(directory, types.Inactive))
+  use ctx <- result.map(load_project_context(directory))
   ctx.placement_files
 }
 
-// The knowledge base the context assembled for `directory` holds, under the
-// given latent-effect reading.
+// The knowledge base the context assembled for `directory` holds.
 @internal
 pub fn context_knowledge_base(
   directory: String,
-  mode: types.LatMode,
 ) -> Result(KnowledgeBase, GradedError) {
-  use ctx <- result.map(load_project_context(directory, mode))
+  use ctx <- result.map(load_project_context(directory))
   ctx.knowledge_base
 }
 
@@ -2241,7 +2213,7 @@ pub fn context_knowledge_base(
 pub fn context_type_definitions(
   directory: String,
 ) -> Result(typedefs.TypeRegistry, GradedError) {
-  use ctx <- result.map(load_project_context(directory, types.Inactive))
+  use ctx <- result.map(load_project_context(directory))
   ctx.registry.types
 }
 
@@ -2251,7 +2223,7 @@ pub fn context_type_definitions(
 pub fn context_tree_visits(
   directory: String,
 ) -> Result(List(String), GradedError) {
-  use ctx <- result.map(load_project_context(directory, types.Inactive))
+  use ctx <- result.map(load_project_context(directory))
   ctx.local_packages.visited
 }
 
@@ -2266,10 +2238,9 @@ pub fn arbitration_baseline_answer(
 ) -> Result(String, GradedError) {
   use sources <- result.try(load_project_sources(
     source_scope(directory).analysed,
-    types.Inactive,
   ))
   let ProjectSources(cfg:, spec:, index:, package_root:, ..) = sources
-  let reading = effects.inactive_reading()
+  let reading = effects.trusting_reading()
   use catalog <- result.try(load_bundled_catalog(package_root, reading))
   let native_of = native_functions_of(index, cfg.targets)
   let local = package_tree.discover(package_root)
@@ -2390,18 +2361,7 @@ pub fn run_effect_formatted(
   name: String,
   format: Format,
 ) -> Result(String, GradedError) {
-  run_effect_with(directory, name, format, types.Inactive)
-}
-
-// `run_effect_formatted` under the given latent-effect reading.
-@internal
-pub fn run_effect_with(
-  directory: String,
-  name: String,
-  format: Format,
-  mode: types.LatMode,
-) -> Result(String, GradedError) {
-  effect_answer(directory, name, mode)
+  effect_answer(directory, name)
   |> result.map(answer.render(_, answer_format(format)))
 }
 
@@ -2416,28 +2376,23 @@ fn answer_format(format: Format) -> answer.Format {
 fn effect_answer(
   directory: String,
   name: String,
-  mode: types.LatMode,
 ) -> Result(EffectAnswer, GradedError) {
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
-  use spec <- result.try(read_spec(cfg.spec_file, mode))
-  // Under the latent-effect rules a bounded `assume` line is weighed against
-  // the run's signatures before anything answers, which only the full context
-  // reads.
-  let fast = case mode {
-    types.Active ->
-      !list.any(annotation.extract_assumes(spec), fn(assume) {
-        assume.params != []
-      })
-    types.Inactive -> True
-  }
+  use spec <- result.try(read_spec(cfg.spec_file))
+  // A bounded `assume` line is weighed against the run's signatures before
+  // anything answers, which only the full context reads.
+  let fast =
+    !list.any(annotation.extract_assumes(spec), fn(assume) {
+      assume.params != []
+    })
   let found = case fast {
-    True -> spec_answer(directory, spec, cfg.targets, name, mode)
+    True -> spec_answer(directory, spec, cfg.targets, name)
     False -> Error(Nil)
   }
   case found {
     Ok(found) -> Ok(found)
-    Error(Nil) -> project_answer(directory, name, mode)
+    Error(Nil) -> project_answer(directory, name)
   }
 }
 
@@ -2454,7 +2409,7 @@ pub fn run_effect_from_project(
   directory: String,
   name: String,
 ) -> Result(String, GradedError) {
-  project_answer(source_scope(directory).analysed, name, types.Inactive)
+  project_answer(source_scope(directory).analysed, name)
   |> result.map(answer.render_graded)
 }
 
@@ -2463,9 +2418,8 @@ pub fn run_effect_from_project(
 fn project_answer(
   directory: String,
   name: String,
-  mode: types.LatMode,
 ) -> Result(EffectAnswer, GradedError) {
-  use ctx <- result.try(load_project_context(directory, mode))
+  use ctx <- result.try(load_project_context(directory))
   case ctx.per_target {
     [] -> {
       let signature = function_signature(ctx, name)
@@ -2937,7 +2891,6 @@ fn spec_answer(
   // does which half of a target-conditional `@external` answers.
   targets: types.PackageTargets,
   name: String,
-  mode: types.LatMode,
 ) -> Result(EffectAnswer, Nil) {
   case annotation.split_function_name(name) {
     // A name the function grammar accepts. The full path resolves it as a
@@ -3025,7 +2978,7 @@ fn spec_answer(
       )
       answer_from(
         with_module_facts(
-          spec_knowledge_base(spec, stale, stale_returns, targets, mode),
+          spec_knowledge_base(spec, stale, stale_returns, targets),
           parsed,
         )
           |> effects.with_dependency_foreign(dependency.foreign)
@@ -3050,7 +3003,7 @@ fn spec_answer(
     Error(Nil) ->
       case
         type_field_effect(
-          spec_knowledge_base(spec, set.new(), set.new(), targets, mode),
+          spec_knowledge_base(spec, set.new(), set.new(), targets),
           name,
         )
       {
@@ -3076,10 +3029,8 @@ fn spec_knowledge_base(
   stale_assumes: Set(String),
   stale_returns_clauses: Set(String),
   targets: types.PackageTargets,
-  mode: types.LatMode,
 ) -> KnowledgeBase {
   effects.new_knowledge_base()
-  |> effects.with_lat_mode(mode)
   |> effects.with_package_targets(targets)
   |> with_spec_assumes(spec, stale_assumes)
   |> with_spec_declared_returns(spec, stale_returns_clauses)
@@ -3513,16 +3464,6 @@ fn bare_type_field(
 /// Returns `FunctionNotFound` when the name isn't a function of a project
 /// module. Nothing is written to disk.
 pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
-  run_why_with(directory, name, types.Inactive)
-}
-
-// `run_why` under the given latent-effect reading.
-@internal
-pub fn run_why_with(
-  directory: String,
-  name: String,
-  mode: types.LatMode,
-) -> Result(String, GradedError) {
   use #(module_path, function) <- result.try(
     annotation.split_function_name(name)
     |> result.replace_error(FunctionNotFound(name)),
@@ -3530,7 +3471,7 @@ pub fn run_why_with(
   // The name is settled against the parsed sources alone: a name this project
   // does not define is not found without paying for the dependency scan, the
   // package-wide girard run and the knowledge base the explanation needs.
-  use sources <- result.try(load_project_sources(directory, mode))
+  use sources <- result.try(load_project_sources(directory))
   use #(_gleam_path, module) <- result.try(
     dict.get(sources.index, module_path)
     |> result.replace_error(FunctionNotFound(name)),
@@ -3549,7 +3490,7 @@ pub fn run_why_each(
   directory: String,
   names: List(String),
 ) -> Result(List(#(String, Result(String, GradedError))), GradedError) {
-  use sources <- result.try(load_project_sources(directory, types.Inactive))
+  use sources <- result.try(load_project_sources(directory))
   use ctx <- result.map(project_context(sources))
   list.map(names, fn(name) {
     #(name, {
@@ -3835,7 +3776,7 @@ pub fn catalog_show(
 // diagnostic's output format is the kind of surface a 1.0 should not freeze.
 @internal
 pub fn run_coverage(directory: String) -> Result(String, GradedError) {
-  use ctx <- result.map(load_project_context(directory, types.Inactive))
+  use ctx <- result.map(load_project_context(directory))
   let rows = context_classification_checks(ctx)
   let ProjectContext(sources:, typed_path_dependencies:, ..) = ctx
   // Where the package was read on several targets one at a time, what girard
@@ -4218,19 +4159,17 @@ fn read_bundled_catalog(
   package_root: String,
   reading: effects.SpecReading,
 ) -> effects.BundledCatalog {
-  effects.load_project_catalog_with(files, manifest_path(package_root), reading)
+  effects.load_project_catalog(files, manifest_path(package_root), reading)
 }
 
 // How the specs other packages wrote, and the bundled catalog, are read in a
 // run: a line whose bounds the latent-effect rules forbid, once the run's
 // signatures and types are known, is refused.
 fn spec_reading(
-  mode: types.LatMode,
   registry: SignatureRegistry,
   readings: Dict(#(String, String), PairReading),
 ) -> effects.SpecReading {
   effects.SpecReading(
-    mode:,
     refuses: fn(assume) { contract.line_violations(assume, registry) != [] },
     rebase: fn(source, file) { rebased_pair_lines(file, readings, source) },
   )
@@ -4847,17 +4786,8 @@ fn compare_catalog_files(
 /// source of truth for hand-written `check`/`assume` lines and
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
-  run_format_with(directory, types.Inactive)
-}
-
-// `run_format` under the given latent-effect reading.
-@internal
-pub fn run_format_with(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
-  use formatted <- result.try(format_one_spec(cfg.spec_file, mode))
+  use formatted <- result.try(format_one_spec(cfg.spec_file))
   case formatted {
     None -> Ok(Nil)
     Some(formatted) ->
@@ -4870,16 +4800,7 @@ pub fn run_format_with(
 /// for editor integration: parse the input, then sort and reformat it. Returns
 /// a `GradedParseError` naming `<stdin>` if the input doesn't parse.
 pub fn run_format_stdin(input: String) -> Result(String, GradedError) {
-  run_format_stdin_with(input, types.Inactive)
-}
-
-// `run_format_stdin` under the given latent-effect reading.
-@internal
-pub fn run_format_stdin_with(
-  input: String,
-  mode: types.LatMode,
-) -> Result(String, GradedError) {
-  annotation.parse_file_with(input, mode)
+  annotation.parse_file(input)
   |> result.map(annotation.format_sorted)
   |> result.map_error(graded_parse_error("<stdin>", _))
 }
@@ -4887,17 +4808,8 @@ pub fn run_format_stdin_with(
 /// Check that the project's spec file is already formatted. Returns error
 /// with the file path if it isn't. Used by CI as `format --check`.
 pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
-  run_format_check_with(directory, types.Inactive)
-}
-
-// `run_format_check` under the given latent-effect reading.
-@internal
-pub fn run_format_check_with(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
-  use formatted <- result.try(format_one_spec(cfg.spec_file, mode))
+  use formatted <- result.try(format_one_spec(cfg.spec_file))
   case formatted {
     None -> Ok(Nil)
     Some(formatted) ->
@@ -4916,12 +4828,11 @@ pub fn run_format_check_with(
 // missing file is tolerated; a malformed one is a parse error.
 fn format_one_spec(
   spec_path: String,
-  mode: types.LatMode,
 ) -> Result(option.Option(String), GradedError) {
   case simplifile.read(spec_path) {
     Error(_) -> Ok(None)
     Ok(content) ->
-      annotation.parse_file_with(content, mode)
+      annotation.parse_file(content)
       |> result.map(fn(file) { Some(annotation.format_sorted(file)) })
       |> result.map_error(graded_parse_error(spec_path, _))
   }
@@ -5672,14 +5583,7 @@ fn project_imports(
 /// analysed after every other project module it imports — a single pass
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
-  infer_write(directory, types.Inactive)
-}
-
-fn infer_write(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(Nil, GradedError) {
-  use outcome <- result.try(compute_infer(directory, mode))
+  use outcome <- result.try(compute_infer(directory))
   write_infer_outcome(outcome)
 }
 
@@ -5691,14 +5595,7 @@ fn infer_write(
 /// re-rendering `run_infer` applies to every line it writes shows up in the
 /// preview too.
 pub fn run_infer_dry_run(directory: String) -> Result(String, GradedError) {
-  infer_dry_run(directory, types.Inactive)
-}
-
-fn infer_dry_run(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(String, GradedError) {
-  use outcome <- result.try(compute_infer(directory, mode))
+  use outcome <- result.try(compute_infer(directory))
   infer_changes(outcome)
   |> option.unwrap("graded: no changes")
   |> Ok
@@ -5709,14 +5606,7 @@ fn infer_dry_run(
 /// if it isn't. Runs the same inference and writes nothing. Used by CI as
 /// `infer --check`.
 pub fn run_infer_check(directory: String) -> Result(Nil, GradedError) {
-  infer_check(directory, types.Inactive)
-}
-
-fn infer_check(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(Nil, GradedError) {
-  use outcome <- result.try(compute_infer(directory, mode))
+  use outcome <- result.try(compute_infer(directory))
   case infer_changes(outcome) {
     None -> Ok(Nil)
     Some(changes) ->
@@ -5741,23 +5631,13 @@ pub fn run_infer_command(
   mode: cli.InferMode,
   directory: String,
 ) -> Result(String, GradedError) {
-  run_infer_command_with(mode, directory, types.Inactive)
-}
-
-// `run_infer_command` under the given latent-effect reading.
-@internal
-pub fn run_infer_command_with(
-  mode: cli.InferMode,
-  directory: String,
-  lat_mode: types.LatMode,
-) -> Result(String, GradedError) {
   case mode {
     cli.Write ->
-      infer_write(directory, lat_mode)
+      run_infer(directory)
       |> result.replace("graded: inferred effects written")
-    cli.DryRun -> infer_dry_run(directory, lat_mode)
+    cli.DryRun -> run_infer_dry_run(directory)
     cli.Check ->
-      infer_check(directory, lat_mode)
+      run_infer_check(directory)
       |> result.replace("graded: spec is up to date")
   }
 }
@@ -5800,11 +5680,8 @@ type ModuleInference {
 // Run the whole of inference without touching disk beyond reads, so both
 // `run_infer` and `run_infer_dry_run` decide what would be written from one
 // shared computation.
-fn compute_infer(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(InferOutcome, GradedError) {
-  use state <- result.map(infer_state(directory, mode))
+fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
+  use state <- result.map(infer_state(directory))
   InferOutcome(
     cfg: state.cfg,
     spec_on_disk: state.spec_on_disk,
@@ -5863,11 +5740,8 @@ fn target_lines(state: InferState) -> TargetLines {
 
 // The inference run behind `compute_infer`, reading nothing from the spec's
 // committed `effects` lines.
-fn infer_state(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(InferState, GradedError) {
-  infer_runs(directory, mode, False) |> result.map(fn(runs) { runs.0 })
+fn infer_state(directory: String) -> Result(InferState, GradedError) {
+  infer_runs(directory, False) |> result.map(fn(runs) { runs.0 })
 }
 
 // The inference run behind `compute_infer`, beside each target's own run where
@@ -5875,7 +5749,6 @@ fn infer_state(
 // none otherwise.
 fn infer_runs(
   directory: String,
-  mode: types.LatMode,
   keep: Bool,
 ) -> Result(#(InferState, List(#(String, InferState))), GradedError) {
   // A package has one spec file, so a scoped `infer` is a whole-package `infer`:
@@ -5892,13 +5765,12 @@ fn infer_runs(
   })
   case targets {
     [] ->
-      infer_state_on(directory, cfg, mode, shared, False)
+      infer_state_on(directory, cfg, shared, False)
       |> result.map(fn(run) { #(run.0, []) })
     [first, ..rest] -> {
       use #(state, first_refused, shared) <- result.try(infer_state_on(
         directory,
         on_target(cfg, first),
-        mode,
         shared,
         True,
       ))
@@ -5925,7 +5797,6 @@ fn infer_runs(
             use #(next, next_refused, shared) <- result.map(infer_state_on(
               directory,
               on_target(cfg, target),
-              mode,
               shared,
               True,
             ))
@@ -5959,14 +5830,12 @@ fn infer_runs(
 fn infer_state_on(
   directory: String,
   cfg: config.GradedConfig,
-  mode: types.LatMode,
   shared: Shared,
   per_target: Bool,
 ) -> Result(#(InferState, List(OwnViolation), Shared), GradedError) {
   use #(base, shared) <- result.try(infer_base(
     directory,
     cfg,
-    mode,
     shared,
     per_target,
   ))
@@ -6048,17 +5917,12 @@ fn shared_tree(
 fn shared_catalog(
   shared: Shared,
   package_root: String,
-  mode: types.LatMode,
 ) -> Result(effects.ParsedCatalog, GradedError) {
   case shared.catalog {
     Some(catalog) -> Ok(catalog)
     None -> {
       use catalog_files <- result.map(locate_bundled_catalog())
-      effects.parse_project_catalog(
-        catalog_files,
-        manifest_path(package_root),
-        mode,
-      )
+      effects.parse_project_catalog(catalog_files, manifest_path(package_root))
     }
   }
 }
@@ -6101,14 +5965,13 @@ type InferBase {
 fn infer_base(
   directory: String,
   cfg: config.GradedConfig,
-  mode: types.LatMode,
   shared: Shared,
   per_target: Bool,
 ) -> Result(#(InferBase, Shared), GradedError) {
   let package_root = resolve_package_root(directory)
   // As in `project_context`: parsed first, read once signatures are known.
-  use parsed_catalog <- result.try(shared_catalog(shared, package_root, mode))
-  use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file, mode))
+  use parsed_catalog <- result.try(shared_catalog(shared, package_root))
+  use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file))
   let declared_modules = annotation.module_assume_modules(spec)
 
   use index <- result.try(case shared.index {
@@ -6148,24 +6011,15 @@ fn infer_base(
   // specs read under the same rules.
   let publishers = publisher_configurations(dep_sources, shared.publishers)
   let readings = pair_readings(dep_sources, package_targets, publishers)
-  let refused = case mode {
-    types.Active ->
-      own_contract_violations(
-        spec,
-        spec_on_disk,
-        readings,
-        registry,
-        !per_target,
-      )
-    types.Inactive -> []
-  }
+  let refused =
+    own_contract_violations(spec, spec_on_disk, readings, registry, !per_target)
   use Nil <- result.try(case per_target {
     False -> own_contract_error(cfg.spec_file, refused)
     True -> Ok(Nil)
   })
   let reported =
     reported_refusals(refused, shared.builds, dep_sources, cfg.targets)
-  let reading = spec_reading(mode, registry, readings)
+  let reading = spec_reading(registry, readings)
   let catalog = effects.read_parsed_catalog(parsed_catalog, reading)
   let registry = signatures.with_shapes(registry, catalog.audit.containers)
   let type_info =
@@ -6896,14 +6750,11 @@ fn public_function_names(module: glance.Module) -> set.Set(String) {
 // knowledge base. Nothing is read from the spec's committed `effects` lines and
 // nothing is written.
 
-// Every public function's line as `infer` would write it under the given
-// latent-effect reading, sorted, without writing anything.
+// Every public function's line as `infer` would write it, sorted, without
+// writing anything.
 @internal
-pub fn inferred_lines_with(
-  directory: String,
-  mode: types.LatMode,
-) -> Result(List(String), GradedError) {
-  use state <- result.map(infer_state(directory, mode))
+pub fn inferred_lines(directory: String) -> Result(List(String), GradedError) {
+  use state <- result.map(infer_state(directory))
   state.public_annotations
   |> list.map(annotation.format_annotation)
   |> list.sort(string.compare)
@@ -6928,7 +6779,7 @@ pub type CensusRoot {
 // `why` join them.
 @internal
 pub fn census_root(directory: String) -> Result(CensusRoot, GradedError) {
-  use #(state, runs) <- result.map(infer_runs(directory, types.Inactive, True))
+  use #(state, runs) <- result.map(infer_runs(directory, True))
   let InferState(cfg:, index:, public_annotations:, ..) = state
   let builds = case runs {
     [] -> no_package_builds()
@@ -7872,8 +7723,7 @@ fn with_tree_baseline(
   )
   let built =
     with_builders(
-      effects.new_knowledge_base()
-        |> effects.with_lat_mode(effects.lat_mode(knowledge_base)),
+      effects.new_knowledge_base(),
       index,
       scan.baseline,
       package_targets,
@@ -7898,7 +7748,7 @@ fn catalog_knowledge_base(
   scan: TreeScan,
   reading: effects.SpecReading,
 ) -> KnowledgeBase {
-  effects.knowledge_base_from_catalog_with(
+  effects.knowledge_base_from_catalog(
     packages_dir(package_root),
     catalog,
     dependency_foreign(scan.baseline),
@@ -8708,11 +8558,8 @@ fn default_package_name(project_root: String) -> String {
   }
 }
 
-fn read_spec(
-  spec_path: String,
-  mode: types.LatMode,
-) -> Result(GradedFile, GradedError) {
-  read_spec_on_disk(spec_path, mode) |> result.map(fn(spec) { spec.1 })
+fn read_spec(spec_path: String) -> Result(GradedFile, GradedError) {
+  read_spec_on_disk(spec_path) |> result.map(fn(spec) { spec.1 })
 }
 
 // The spec file's bytes and the parse of them. A spec file that isn't there
@@ -8724,13 +8571,12 @@ fn read_spec(
 // empty file over the hand-written lines.
 fn read_spec_on_disk(
   spec_path: String,
-  mode: types.LatMode,
 ) -> Result(#(String, GradedFile), GradedError) {
   case effects.read_optional_file(spec_path) {
     Ok(None) -> Ok(#("", GradedFile(lines: [])))
     Error(cause) -> Error(FileReadError(spec_path, cause))
     Ok(Some(content)) ->
-      annotation.parse_file_with(content, mode)
+      annotation.parse_file(content)
       |> result.map(fn(file) { #(content, file) })
       |> result.map_error(graded_parse_error(spec_path, _))
   }
@@ -8803,7 +8649,7 @@ fn enrich_with_path_deps(
     Error(Nil) -> #(package.directory, baseline)
   }
   let spec_path = filepath.join(location, package.spec_file)
-  let load = effects.load_dep_spec_at_with(location, spec_path, reading)
+  let load = effects.load_dep_spec_at(location, spec_path, reading)
   effects.warn_dep_spec_load(name, load)
   case load {
     effects.SpecLoaded(spec:, ..) -> {

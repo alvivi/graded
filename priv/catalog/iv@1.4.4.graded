@@ -1,3 +1,31 @@
 // iv — pure immutable persistent arrays
 
 assume iv : []
+
+// iv — what the reviewed functions do with the functions they are given
+assume iv.all(array: [array], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(array)
+assume iv.any(array: [array], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(array)
+assume iv.each(array: [array], something: [something]) : [something] where runs : [], relay : something(array)
+assume iv.each_right(array: [array], something: [something]) : [something] where runs : [], relay : something(array)
+assume iv.filter(items: [items], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(items)
+assume iv.filter_map(items: [items], fun: [fun]) : [fun] where runs : [], relay : fun(items)
+assume iv.find(array: [array], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(array)
+assume iv.find_index(array: [array], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(array)
+assume iv.find_last_index(array: [array], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(array)
+assume iv.find_map(array: [array], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(array)
+assume iv.flat_map(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(array)
+assume iv.fold(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array)
+assume iv.fold_right(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array)
+assume iv.from_yielder(source: [source]) : [] where runs : [source]
+assume iv.index_fold(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array, _)
+assume iv.index_fold_right(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array, _)
+assume iv.index_map(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(array, _)
+assume iv.initialise(fun: [fun]) : [fun] where runs : []
+assume iv.map(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(array)
+assume iv.map2(a: [a], b: [b], fun: [fun]) : [fun] where runs : [], relay : fun(a, b)
+assume iv.splice(replacer: [replacer]) : [replacer] where runs : []
+assume iv.try_each(array: [array], something: [something]) : [something] where runs : [], relay : something(array)
+assume iv.try_fold(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array)
+assume iv.try_map(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(array)
+assume iv.try_update(fun: [fun]) : [fun] where runs : []
+assume iv.update(fun: [fun]) : [fun] where runs : []

@@ -215,8 +215,6 @@ pub type KnowledgeBase {
     // new ones would leave it `[Unknown]`. `None` where no package is newly
     // loaded.
     structural_baseline: Option(StructuralBaseline),
-    // The latent-effect reading the run chose before it parsed anything.
-    lat_mode: types.LatMode,
     // What the bundled catalog's audit records for the versions installed.
     audit: CatalogAudit,
   )
@@ -315,22 +313,17 @@ pub fn load_knowledge_base(
 ) -> KnowledgeBase {
   knowledge_base_from_catalog(
     packages_directory,
-    load_project_catalog(catalog, manifest_path),
+    load_project_catalog(catalog, manifest_path, trusting_reading()),
     dependency_foreign,
+    trusting_reading(),
   )
 }
 
-// The knowledge base's latent-effect reading.
-pub fn lat_mode(knowledge_base: KnowledgeBase) -> types.LatMode {
-  knowledge_base.lat_mode
-}
-
-// How a spec another package wrote is read: under which latent-effect rules,
-// and which of its `assume` lines those rules refuse once the run's signatures
-// and types are known. A refused line is replaced by `assume <path> : [_]`.
+// How a spec another package wrote is read: which of its `assume` lines the
+// latent-effect rules refuse once the run's signatures and types are known. A
+// refused line is replaced by `assume <path> : [_]`.
 pub type SpecReading {
   SpecReading(
-    mode: types.LatMode,
     refuses: fn(AssumeAnnotation) -> Bool,
     // Lines over a dependency's functions, from the source given, stated in
     // the parameter names of the variants this run reads.
@@ -348,30 +341,17 @@ pub type LineSource {
   ConsumerLines
 }
 
-// The reading without the latent-effect rules, which refuses nothing and
+// The reading for a caller that knows no signatures: it refuses nothing, and
 // reads every line as written.
-pub fn inactive_reading() -> SpecReading {
-  SpecReading(
-    mode: types.Inactive,
-    refuses: fn(_) { False },
-    rebase: fn(_source, file) { file },
-  )
-}
-
-// The same knowledge base, read under `mode`.
-pub fn with_lat_mode(
-  knowledge_base: KnowledgeBase,
-  mode: types.LatMode,
-) -> KnowledgeBase {
-  KnowledgeBase(..knowledge_base, lat_mode: mode)
+pub fn trusting_reading() -> SpecReading {
+  SpecReading(refuses: fn(_) { False }, rebase: fn(_source, file) { file })
 }
 
 // The bundled catalog as one value. Held together so a caller needing it twice
 // — the knowledge base and the spec lint both do — reads the files once.
 pub type BundledCatalog {
   BundledCatalog(
-    // What the selected files' audit records say for the installed versions:
-    // read only under the latent-effect rules, and empty without them.
+    // What the selected files' audit records say for the installed versions.
     audit: CatalogAudit,
     functions: Dict(QualifiedName, TermEntry),
     modules: Dict(String, #(EffectTerm, LookupOrigin)),
@@ -380,24 +360,14 @@ pub type BundledCatalog {
   )
 }
 
-// The `catalog` files selected against `manifest_path`'s installed versions.
+// The `catalog` files selected against `manifest_path`'s installed versions,
+// read under `reading`.
 pub fn load_project_catalog(
-  catalog: List(CatalogFile),
-  manifest_path: String,
-) -> BundledCatalog {
-  load_project_catalog_with(catalog, manifest_path, inactive_reading())
-}
-
-// `load_project_catalog` under the given reading.
-pub fn load_project_catalog_with(
   catalog: List(CatalogFile),
   manifest_path: String,
   reading: SpecReading,
 ) -> BundledCatalog {
-  read_parsed_catalog(
-    parse_project_catalog(catalog, manifest_path, reading.mode),
-    reading,
-  )
+  read_parsed_catalog(parse_project_catalog(catalog, manifest_path), reading)
 }
 
 // The selected catalog files parsed, each by its package, with what their audit
@@ -408,18 +378,33 @@ pub opaque type ParsedCatalog {
 }
 
 // The `catalog` files selected against `manifest_path`'s installed versions,
-// parsed under `mode`. A file that fails to read or parse is left out. The
-// audit is read only under the latent-effect rules, and empty without them.
+// parsed. A file that fails to read or parse is left out.
 pub fn parse_project_catalog(
   catalog: List(CatalogFile),
   manifest_path: String,
-  mode: types.LatMode,
 ) -> ParsedCatalog {
   let installed_versions = manifest_versions(manifest_path)
   let selected = resolve_catalog_files(catalog, installed_versions)
-  ParsedCatalog(files: parse_catalog_files(selected, mode), audit: case mode {
-    types.Active -> read_catalog_audit(selected, installed_versions)
-    types.Inactive -> audit.empty()
+  ParsedCatalog(
+    files: parse_catalog_files(selected),
+    audit: read_catalog_audit(selected, installed_versions),
+  )
+}
+
+// Each selected file — its package and path — parsed; one that fails to read
+// or parse is left out.
+fn parse_catalog_files(
+  selected: List(#(String, String)),
+) -> List(#(String, types.GradedFile)) {
+  list.filter_map(selected, fn(entry) {
+    let #(package, file_path) = entry
+    use content <- result.try(
+      simplifile.read(file_path) |> result.replace_error(Nil),
+    )
+    use graded_file <- result.map(
+      annotation.parse_catalog(content) |> result.replace_error(Nil),
+    )
+    #(package, graded_file)
   })
 }
 
@@ -439,23 +424,10 @@ pub fn read_parsed_catalog(
   )
 }
 
-// The same as `load_knowledge_base`, over a catalog the caller already loaded.
+// The same as `load_knowledge_base`, over a catalog the caller already loaded,
+// under `reading`: the dependency specs are read under it and the base carries
+// its latent-effect rules.
 pub fn knowledge_base_from_catalog(
-  packages_directory: String,
-  catalog: BundledCatalog,
-  dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
-) -> KnowledgeBase {
-  knowledge_base_from_catalog_with(
-    packages_directory,
-    catalog,
-    dependency_foreign,
-    inactive_reading(),
-  )
-}
-
-// `knowledge_base_from_catalog` under the given reading, which the dependency
-// specs are read under and whose latent-effect rules the base carries.
-pub fn knowledge_base_from_catalog_with(
   packages_directory: String,
   catalog: BundledCatalog,
   dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
@@ -507,7 +479,6 @@ pub fn knowledge_base_from_catalog_with(
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
-    lat_mode: reading.mode,
     audit: catalog_audit,
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
@@ -538,7 +509,6 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
-    lat_mode: types.Inactive,
     audit: audit.empty(),
   )
 }
@@ -549,8 +519,18 @@ pub fn empty_knowledge_base(
   catalog: List(CatalogFile),
   package_root: String,
 ) -> KnowledgeBase {
-  let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
-    load_catalog(catalog, filepath.join(package_root, "manifest.toml"))
+  let BundledCatalog(
+    audit:,
+    functions: cat_effects,
+    modules: cat_module_effects,
+    param_bounds: cat_params,
+    type_fields: cat_type_fields,
+  ) =
+    load_project_catalog(
+      catalog,
+      filepath.join(package_root, "manifest.toml"),
+      trusting_reading(),
+    )
   KnowledgeBase(
     all_effects: cat_effects,
     param_bounds: cat_params,
@@ -570,8 +550,7 @@ pub fn empty_knowledge_base(
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
-    lat_mode: types.Inactive,
-    audit: audit.empty(),
+    audit:,
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -1318,14 +1297,11 @@ fn bound_renames(bounds: List(ParamBound)) -> Dict(String, List(String)) {
 
 // A bounded declaration's self-referential form, both halves off one rename
 // map so the term and the bounds that bind it cannot drift apart: the closure
-// renames each term variable to the parameter whose payload binds it — the
-// last binder winning on a duplicate, as it does in the checker's binding
-// fold, and `[Unknown]` where none does — and the bound list has every
-// binding payload replaced by its own parameter name, a ground budget kept as
-// written. The bounds scrub is deliberately broader than the map's image: on
-// a duplicate binder the map keeps only the last, but every binding payload
-// is scrubbed, so no declared payload variable survives to capture a
-// fallback parameter of the same name at the call site.
+// renames each term variable to the parameters whose payloads bind it —
+// joined where several do, and `[Unknown]` where none does — and the bound
+// list has every binding payload replaced by its own parameter name, a ground
+// budget kept as written, so no declared payload variable survives to capture
+// a fallback parameter of the same name at the call site.
 pub fn self_referential_declaration(
   bounds: List(ParamBound),
 ) -> #(List(ParamBound), fn(EffectTerm) -> EffectTerm) {
@@ -1343,8 +1319,14 @@ pub fn self_referential_declaration(
       declared
       |> effect_term.free_vars()
       |> set.fold(dict.new(), fn(acc, variable) {
-        case dict.get(renames, variable) |> result.try(list.last) {
-          Ok(parameter) -> dict.insert(acc, variable, types.TVar(parameter))
+        case dict.get(renames, variable) {
+          Ok([parameter]) -> dict.insert(acc, variable, types.TVar(parameter))
+          Ok(parameters) ->
+            dict.insert(
+              acc,
+              variable,
+              types.TUnion(list.map(parameters, types.TVar)),
+            )
           Error(Nil) -> dict.insert(acc, variable, effect_term.unknown())
         }
       })
@@ -3353,7 +3335,6 @@ pub type DepSpecLoad {
 // The paths of a file's function `assume` lines the reading refuses, in file
 // order.
 fn refused_paths(file: types.GradedFile, reading: SpecReading) -> List(String) {
-  use <- bool.guard(when: reading.mode == types.Inactive, return: [])
   annotation.extract_assumes(file)
   |> list.filter(fn(assume) {
     case assume.target {
@@ -3511,18 +3492,13 @@ fn with_loaded_spec(load: DepSpecLoad, absent: a, read: fn(DepSpec) -> a) -> a {
 // effects alone would drop the bounds a higher-order callee needs to discharge
 // its callback's effect, the `type` fields a capability record on the dep's own
 // types needs to resolve at a consumer's call site, or the `assume`
-// lines the dep author wrote for its FFI.
-pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpecLoad {
-  load_dep_spec_with(dep_root, package_name, inactive_reading())
-}
-
-// `load_dep_spec` under the given reading.
-pub fn load_dep_spec_with(
+// lines the dep author wrote for its FFI. Read under `reading`.
+pub fn load_dep_spec(
   dep_root: String,
   package_name: String,
   reading: SpecReading,
 ) -> DepSpecLoad {
-  load_dep_spec_at_with(
+  load_dep_spec_at(
     dep_root,
     config.spec_file_for(dep_root, package_name),
     reading,
@@ -3544,15 +3520,10 @@ pub fn load_dep_spec_with(
 // would build; each such path is recorded for the warning. A path that names
 // no module, a bare field path included, is not the package's either, and a
 // package whose `src/` tree is missing, unreadable or holds no Gleam module
-// ships no module at all.
-pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
-  load_dep_spec_at_with(dep_root, spec_path, inactive_reading())
-}
-
-// `load_dep_spec_at` under the given reading. A line the reading refuses is
-// rejected whole, as a line the parser rejects is: its path is charged the
+// ships no module at all. Read under `reading`: a line the reading refuses is
+// rejected whole, as a line the parser rejects is, and its path is charged the
 // wildcard from this dependency's own tier.
-pub fn load_dep_spec_at_with(
+pub fn load_dep_spec_at(
   dep_root: String,
   spec_path: String,
   reading: SpecReading,
@@ -3563,8 +3534,7 @@ pub fn load_dep_spec_at_with(
     Ok(Some(content)) -> {
       let source_dir = filepath.join(dep_root, "src")
       let modules = package_modules(source_dir)
-      let #(parsed, rejected) =
-        annotation.parse_file_lenient_with(content, reading.mode)
+      let #(parsed, rejected) = annotation.parse_file_lenient(content)
       let #(owned_lines, foreign_lines) = partition_owned(parsed.lines, modules)
       let owned =
         reading.rebase(
@@ -4063,7 +4033,7 @@ fn load_dependencies(
       fn(acc, package_name) {
         let origin = DependencySpec(package: package_name)
         let dep_root = packages_directory <> "/" <> package_name
-        let load = load_dep_spec_with(dep_root, package_name, reading)
+        let load = load_dep_spec(dep_root, package_name, reading)
         warn_dep_spec_load(package_name, load)
         use spec <- with_loaded_spec(load, acc)
         let dep = sanitize_dep_spec(spec, foreign)
@@ -4150,22 +4120,9 @@ type CatalogAcc {
 // into the function effects, module-level externals, parameter bounds and
 // `type` field annotations they declare. Exposed so a test can compose a
 // catalog of its own; production callers reach it through the knowledge-base
-// builders.
+// builders. Read under `reading`: a line the reading refuses is replaced by
+// `assume <path> : [_]`.
 pub fn load_catalog(
-  catalog: List(CatalogFile),
-  manifest_path: String,
-) -> #(
-  Dict(QualifiedName, TermEntry),
-  Dict(String, #(EffectTerm, LookupOrigin)),
-  Dict(QualifiedName, List(ParamBound)),
-  List(#(FieldAnnotation, LookupOrigin)),
-) {
-  load_catalog_with(catalog, manifest_path, inactive_reading())
-}
-
-// `load_catalog` under the given reading. A line the reading refuses is
-// replaced by `assume <path> : [_]`.
-pub fn load_catalog_with(
   catalog: List(CatalogFile),
   manifest_path: String,
   reading: SpecReading,
@@ -4176,27 +4133,8 @@ pub fn load_catalog_with(
   List(#(FieldAnnotation, LookupOrigin)),
 ) {
   resolve_catalog_files(catalog, manifest_versions(manifest_path))
-  |> parse_catalog_files(reading.mode)
+  |> parse_catalog_files
   |> read_catalog_files(reading)
-}
-
-// Each selected file — its package and path — parsed under `mode`; one that
-// fails to read or parse is left out.
-fn parse_catalog_files(
-  selected: List(#(String, String)),
-  mode: types.LatMode,
-) -> List(#(String, types.GradedFile)) {
-  list.filter_map(selected, fn(entry) {
-    let #(package, file_path) = entry
-    use content <- result.try(
-      simplifile.read(file_path) |> result.replace_error(Nil),
-    )
-    use graded_file <- result.map(
-      annotation.parse_catalog_with(content, mode)
-      |> result.replace_error(Nil),
-    )
-    #(package, graded_file)
-  })
 }
 
 // The selected catalog files, read under `reading`.

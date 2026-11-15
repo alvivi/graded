@@ -72,8 +72,6 @@ pub type Context {
     // resolved. A thunk, so a spec with no `assume` or declared-returns line
     // never pays for the walk that answers it.
     dependency_sources_are_complete: fn() -> Bool,
-    // The latent-effect reading the spec was parsed under.
-    mode: types.LatMode,
     // Each bound of an `assume` line with its parameter's kind, read against
     // the run's signatures and types.
     resolve_bounds: fn(types.AssumeAnnotation) -> List(contract.ResolvedBound),
@@ -272,18 +270,15 @@ pub fn run_recording_lookups(
       UnknownClauseWarning(path:, keys:)
     })
 
-  // Under the latent-effect rules a bound on a parameter that is not a callback
-  // names what the argument carries, which only a single variable can.
-  let meaningless_warnings = case context.mode {
-    types.Inactive -> []
-    types.Active ->
-      meaningless_bound_warnings(
-        assumes,
-        context.reader_view,
-        context.resolve_bounds,
-        dead_assumes,
-      )
-  }
+  // A bound on a parameter that is not a callback names what the argument
+  // carries, which only a single variable can.
+  let meaningless_warnings =
+    meaningless_bound_warnings(
+      assumes,
+      context.reader_view,
+      context.resolve_bounds,
+      dead_assumes,
+    )
 
   #(
     list.flatten([

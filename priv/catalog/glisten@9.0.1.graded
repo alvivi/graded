@@ -3,6 +3,6 @@
 assume glisten.get_connection_info : [Network]
 assume glisten.get_server_info : [Network]
 assume glisten.send : [Network]
-assume glisten.start : [Network, Process]
+assume glisten.start(builder: [builder]) : [Network, Process] where runs : [builder]
 assume glisten.stop : [Process]
 assume glisten.supervised : [Network, Process]

@@ -1,3 +1,10 @@
 // gleam_json — pure JSON encoding/decoding
 
 assume gleam/json : []
+
+// gleam_json — what the reviewed functions do with the functions they are given
+assume gleam/json.array(entries: [entries], inner_type: [inner_type]) : [inner_type] where runs : [], relay : inner_type(entries)
+assume gleam/json.dict(dict: [dict], keys: [keys], values: [values]) : [keys, values] where runs : [], relay : keys(dict), relay : values(dict)
+assume gleam/json.nullable(input: [input], inner_type: [inner_type]) : [inner_type] where runs : [], relay : inner_type(input)
+assume gleam/json.parse(decoder: [d]) : [] where runs : [d]
+assume gleam/json.parse_bits(decoder: [d]) : [] where runs : [d]

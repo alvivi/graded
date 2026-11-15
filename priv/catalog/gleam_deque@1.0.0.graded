@@ -1,3 +1,6 @@
 // gleam_deque — pure double-ended queue
 
 assume gleam/deque : []
+
+// gleam_deque — what the reviewed functions do with the functions they are given
+assume gleam/deque.is_logically_equal(element_is_equal: [element_is_equal]) : [element_is_equal] where runs : []
