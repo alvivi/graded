@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- graded runs faster on large projects: `graded infer` over graded's own source
+  takes about 2.5 s where it took 3.5 s.
 - A package whose `targets` names both takes about 15% longer to analyse
   where it defines a name once per target with `@target`, or reads a
   dependency that defines a public function once per target, or a type once
