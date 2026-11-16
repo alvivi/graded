@@ -152,6 +152,7 @@ pub type CatalogProblem {
 }
 
 pub fn main() -> Nil {
+  set_binary_heap_allowance(binary_heap_allowance)
   case argv.load().arguments {
     [] -> run_check("src")
 
@@ -9383,6 +9384,18 @@ pub fn format_catalog_problem(problem: CatalogProblem) -> String {
 @external(erlang, "erlang", "halt")
 @external(javascript, "./graded_ffi.mjs", "halt")
 fn halt(code: Int) -> Nil
+
+// How many words of off-heap binaries, the source text a run reads among
+// them, the process running a command may reference before that alone sets off
+// a full sweep of its heap.
+const binary_heap_allowance = 1_000_000
+
+// Set the running process's minimum binary virtual heap size
+// (`min_bin_vheap_size`) to `words`. Nothing on JavaScript.
+@external(erlang, "graded_ffi", "set_binary_heap_allowance")
+fn set_binary_heap_allowance(_words: Int) -> Nil {
+  Nil
+}
 
 // Read all of standard input to EOF as a single string, or the reason it could
 // not be read. A read error is reported rather than folded into end-of-input:

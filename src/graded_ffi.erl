@@ -4,7 +4,8 @@
     priv_directory/0,
     loaded_version/1,
     otp_release/0,
-    compiler_output/0
+    compiler_output/0,
+    set_binary_heap_allowance/1
 ]).
 
 % Read all of standard input to EOF, as `{ok, Binary}` or `{error, Reason}`.
@@ -90,3 +91,10 @@ read_error(Reason) ->
     unicode:characters_to_binary(
         io_lib:format("stdin could not be read: ~p", [Reason])
     ).
+
+% Set the calling process's minimum binary virtual heap size
+% (`min_bin_vheap_size`) to `Words`: how many words of off-heap binaries its
+% heap may reference before that alone sets off a full sweep.
+set_binary_heap_allowance(Words) ->
+    _ = erlang:process_flag(min_bin_vheap_size, Words),
+    nil.
