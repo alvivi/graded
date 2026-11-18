@@ -3,18 +3,33 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - LICENSE
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - LICENSE
+
+# A pull request's runs share one group, where a new run cancels the one in
+# progress; each push to `main` has a group of its own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
+  suite:
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          # The pinned pair, from `.tool-versions`: every gate.
+          # The pinned pair, from `.tool-versions`: every gate but the harness,
+          # which runs in `harness`.
           - name: pinned
             gleam: "1.19.0"
             erlang: "28.4.2"
@@ -39,10 +54,6 @@ jobs:
           otp-version: ${{ matrix.erlang }}
           version-type: strict
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       - name: Download dependencies
         run: gleam deps download
 
@@ -62,5 +73,32 @@ jobs:
       - name: Public API names no internal type
         run: gleam run -m check_public_interface
 
+  harness:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per shard of `effect_validation`.
+        shard: [1, 2, 3]
+
+    name: harness ${{ matrix.shard }}/${{ strategy.job-total }} (pinned)
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # The pinned pair, read from `.tool-versions`.
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download dependencies
+        run: gleam deps download
+
       - name: Answers contain what generated programs do
-        run: gleam run -m effect_validation -- --seed 1 --cases 40
+        run: gleam run -m effect_validation -- --seed 1 --cases 40 --shard ${{ matrix.shard }}/${{ strategy.job-total }}
