@@ -53,6 +53,7 @@ import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded
+import graded/internal/answer
 import shellout
 import simplifile
 
@@ -7652,10 +7653,13 @@ fn consistency_failures(
   let over_nothing =
     checked(list.map(ground, fn(line) { "check " <> line.0 <> " : []\n" }))
   write(spec_path, spec)
+  let paths = list.map(lines, fn(line) { line.0 })
   let whys =
-    graded.run_why_each(directory, list.map(lines, fn(line) { line.0 }))
+    graded.run_why_each(directory, paths)
     |> result.unwrap([])
     |> dict.from_list
+  let effects =
+    names_or_error(dict.from_list(graded.run_effect_each(directory, paths)))
   list.flat_map(lines, fn(line) {
     let #(path, rest) = line
     let complaint = fn(what) {
@@ -7669,11 +7673,11 @@ fn consistency_failures(
       |> list.find(fn(line) { !string.starts_with(line, "//") })
       |> result.unwrap("")
     }
-    let effect_line =
-      graded.run_effect(directory, path) |> result.map(collapsed)
-    let effect_sentence =
-      graded.run_effect_formatted(directory, path, graded.Prose)
-      |> result.map(first_line)
+    let effect = fn(format) {
+      dict.get(effects, path) |> result.map(answer.render(_, format))
+    }
+    let effect_line = effect(answer.Graded) |> result.map(collapsed)
+    let effect_sentence = effect(answer.Prose) |> result.map(first_line)
     let why_sentence =
       dict.get(names_or_error(whys), path)
       |> result.map(first_line)
@@ -7727,12 +7731,10 @@ fn consistency_failures(
   })
 }
 
-fn names_or_error(
-  whys: Dict(String, Result(String, a)),
-) -> Dict(String, String) {
-  dict.fold(whys, dict.new(), fn(acc, name, why) {
-    case why {
-      Ok(text) -> dict.insert(acc, name, text)
+fn names_or_error(answers: Dict(String, Result(v, a))) -> Dict(String, v) {
+  dict.fold(answers, dict.new(), fn(acc, name, answered) {
+    case answered {
+      Ok(found) -> dict.insert(acc, name, found)
       Error(_) -> acc
     }
   })
