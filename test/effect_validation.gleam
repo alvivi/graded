@@ -49,6 +49,7 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option
+import gleam/pair
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -2081,6 +2082,20 @@ fn publication_cases(graded: String, root: String) -> Outcome {
     })
     |> list.flatten
   let directory = root <> "/app"
+  // `graded effect`'s `.graded` answer for each dependency's `functions`, from
+  // one analysis of the app, by qualified name.
+  let effect_each = fn(functions) {
+    let answers =
+      list.flat_map(deps, fn(dep) {
+        list.map(functions, fn(function) { dep.0 <> "." <> function })
+      })
+      |> graded.run_effect_each(directory, _)
+      |> dict.from_list
+      |> names_or_error
+    fn(name) {
+      dict.get(answers, name) |> result.map(answer.render(_, answer.Graded))
+    }
+  }
   write_project_importing(
     directory,
     "erlang",
@@ -2116,6 +2131,7 @@ fn publication_cases(graded: String, root: String) -> Outcome {
       ],
       fn(reading) {
         write(directory <> "/gleam.toml", toml(reading.1))
+        let effect = effect_each(published_named)
         list.flat_map(deps, fn(dep) {
           list.map(published_named, fn(function) {
             let name = dep.0 <> "." <> function
@@ -2123,8 +2139,7 @@ fn publication_cases(graded: String, root: String) -> Outcome {
               reading.0,
               dep.0,
               name,
-              graded.run_effect(directory, name)
-                |> result.map(first_statement),
+              effect(name) |> result.map(first_statement),
             )
           })
         })
@@ -2180,13 +2195,14 @@ fn publication_cases(graded: String, root: String) -> Outcome {
       // Each answer's labels, beside the names whose query declined: every
       // function queried is built on each target the app is read on.
       let direct = fn(on: String) {
+        let effect = effect_each(list.map(published_direct, pair.first))
         let queried =
           list.index_map(deps, fn(dep, index) {
             list.map(published_direct, fn(called) {
               let name = dep.0 <> "." <> called.0
               #(
                 "case_" <> int.to_string(index * published_count + called.1),
-                #(name, graded.run_effect(directory, name)),
+                #(name, effect(name)),
               )
             })
           })
@@ -2216,6 +2232,7 @@ fn publication_cases(graded: String, root: String) -> Outcome {
       // parameters its publisher's own spec names, its returned operator's
       // variables among them.
       let named = fn(on: String) {
+        let effect = effect_each(published_named)
         list.flat_map(deps, fn(dep) {
           let published =
             read(root <> "/" <> dep.0 <> "/" <> dep.0 <> ".graded")
@@ -2228,7 +2245,7 @@ fn publication_cases(graded: String, root: String) -> Outcome {
                 || string.starts_with(line, "effects " <> name <> " ")
               })
               |> result.unwrap("")
-            case graded.run_effect(directory, name) {
+            case effect(name) {
               Error(_) -> Error(Nil)
               Ok(text) -> {
                 let answer = first_statement(text)
