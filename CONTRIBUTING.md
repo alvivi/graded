@@ -58,7 +58,9 @@ needs Node on the path. It writes generated programs under
 `build/effect_validation/`, runs each one (an Erlang project and a JavaScript
 project), and fails when a function's inferred effects miss an effect its run
 printed. `--graded <dir>` answers with another graded checkout, to compare
-revisions on the same cases.
+revisions on the same cases. `--shard <i>/<n>` runs the i-th of n disjoint
+slices of its blocks, which together make the whole run; CI runs each slice in
+a job of its own.
 
 Everything the public API names is defined in `src/graded.gleam`; a function
 that exists only for graded's own tests is marked `@internal`, which keeps it
