@@ -2378,22 +2378,28 @@ fn effect_answer(
   directory: String,
   name: String,
 ) -> Result(EffectAnswer, GradedError) {
-  let directory = source_scope(directory).analysed
+  case run_effect_each(directory, [name]) {
+    [#(_, found)] -> found
+    _ -> Error(EffectNotFound(name))
+  }
+}
+
+// The spec-only fast path over `directory`'s spec: a name's answer where the
+// spec alone decides it, `Error(Nil)` where it does not.
+fn spec_lookup(
+  directory: String,
+) -> Result(fn(String) -> Result(EffectAnswer, Nil), GradedError) {
   use cfg <- result.try(read_config(directory))
-  use spec <- result.try(read_spec(cfg.spec_file))
+  use spec <- result.map(read_spec(cfg.spec_file))
   // A bounded `assume` line is weighed against the run's signatures before
   // anything answers, which only the full context reads.
-  let fast =
-    !list.any(annotation.extract_assumes(spec), fn(assume) {
+  case
+    list.any(annotation.extract_assumes(spec), fn(assume) {
       assume.params != []
     })
-  let found = case fast {
-    True -> spec_answer(directory, spec, cfg.targets, name)
-    False -> Error(Nil)
-  }
-  case found {
-    Ok(found) -> Ok(found)
-    Error(Nil) -> project_answer(directory, name)
+  {
+    True -> fn(_) { Error(Nil) }
+    False -> spec_answer(directory, spec, cfg.targets, _)
   }
 }
 
@@ -2410,17 +2416,17 @@ pub fn run_effect_from_project(
   directory: String,
   name: String,
 ) -> Result(String, GradedError) {
-  project_answer(source_scope(directory).analysed, name)
+  load_project_context(source_scope(directory).analysed)
+  |> result.try(project_answer(_, name))
   |> result.map(answer.render_graded)
 }
 
 // Answer from the full project context: every module parsed, dependency sources
 // scanned, girard run package-wide.
 fn project_answer(
-  directory: String,
+  ctx: ProjectContext,
   name: String,
 ) -> Result(EffectAnswer, GradedError) {
-  use ctx <- result.try(load_project_context(directory))
   case ctx.per_target {
     [] -> {
       let signature = function_signature(ctx, name)
@@ -3483,6 +3489,30 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
   )
   use ctx <- result.try(project_context(sources))
   why_in(ctx, module, module_path, function, name)
+}
+
+// `graded effect` for each of `names`, sharing one project context among the
+// names the spec alone does not answer.
+@internal
+pub fn run_effect_each(
+  directory: String,
+  names: List(String),
+) -> List(#(String, Result(EffectAnswer, GradedError))) {
+  let directory = source_scope(directory).analysed
+  let from_spec = spec_lookup(directory)
+  // `loaded` is the project context, loaded at the first name the spec leaves
+  // open.
+  list.map_fold(names, None, fn(loaded, name) {
+    case result.map(from_spec, fn(lookup) { lookup(name) }) {
+      Error(error) -> #(loaded, #(name, Error(error)))
+      Ok(Ok(found)) -> #(loaded, #(name, Ok(found)))
+      Ok(Error(Nil)) -> {
+        let ctx =
+          option.lazy_unwrap(loaded, fn() { load_project_context(directory) })
+        #(Some(ctx), #(name, result.try(ctx, project_answer(_, name))))
+      }
+    }
+  }).1
 }
 
 // `graded why` for each of `names`, against one project context.
