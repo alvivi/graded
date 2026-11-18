@@ -1,4 +1,5 @@
 import filepath
+import glance
 import gleam/list
 import gleam/result
 import gleam/string
@@ -1107,4 +1108,127 @@ pub fn a_stale_clause_only_assume_reaches_neither_path_test() {
   graded.run_effect(project, "m.make") |> should.equal(expected)
   graded.run_effect_from_project(project, "m.make") |> should.equal(expected)
   cleanup(project)
+}
+
+// Many names from one analysis
+//
+// Each name answered as it is alone, in the order asked.
+
+// `run_effect_each` over `names`, rendered as `.graded`, each entry checked
+// against `run_effect` and `run_effect_formatted` over its name alone.
+fn effect_each(
+  project: String,
+  names: List(String),
+) -> List(#(String, Result(String, graded.GradedError))) {
+  use #(name, found) <- list.map(graded.run_effect_each(project, names))
+  let rendered = result.map(found, answer.render(_, answer.Graded))
+  rendered |> should.equal(graded.run_effect(project, name))
+  result.map(found, answer.render(_, answer.Prose))
+  |> should.equal(graded.run_effect_formatted(project, name, graded.Prose))
+  #(name, rendered)
+}
+
+// A two-target package whose `m.go` calls a `[Disk]` function on Erlang and a
+// `[Net]` one on JavaScript, beside an ordinary function, a private one and a
+// field `assume`, with `extra` appended to its spec.
+fn two_target_each_project(extra: String) -> String {
+  write_fixture("build/graded_effect_each", [
+    #("gleam.toml", support.dual_target_toml("probe")),
+    #(
+      "probe.graded",
+      "assume m.disk : [Disk]\nassume m.net : [Net]\nassume m.Box.run : [Time]\n"
+        <> extra,
+    ),
+    #(
+      "src/m.gleam",
+      "pub type Box {\n  Box(run: fn() -> Nil)\n}\n\n"
+        <> support.foreign_fn("disk", "() -> Nil")
+        <> support.foreign_fn("net", "() -> Nil")
+        <> support.foreign_fn("each", "(f: fn() -> Nil) -> Nil")
+        <> "@target(erlang)\npub fn go() -> Nil {\n  disk()\n}\n\n"
+        <> "@target(javascript)\npub fn go() -> Nil {\n  net()\n}\n\n"
+        <> "pub fn plain() -> Nil {\n  Nil\n}\n\nfn hidden() -> Nil {\n  Nil\n}\n",
+    ),
+  ])
+}
+
+pub fn effect_each_answers_each_name_as_it_is_answered_alone_test() {
+  let go =
+    Ok("// resolved from in-memory inference\neffects m.go : [Disk, Net]")
+  let expected = [
+    #("m.hidden", Error(graded.EffectNotFound("m.hidden"))),
+    #("m.go", go),
+    #(
+      "m.Box.run",
+      Ok(
+        "// assumed by a field `assume` in your spec\nassume m.Box.run : [Time]",
+      ),
+    ),
+    #("m.absent", Error(graded.EffectNotFound("m.absent"))),
+    #(
+      "m.plain",
+      Ok("// resolved from in-memory inference\neffects m.plain : []"),
+    ),
+    #("m.go", go),
+  ]
+  // Without a bounded `assume` line the spec answers the field on its own;
+  // with one, every name is answered from the project context.
+  list.each(["", "assume m.each(f: [f]) : [f]\n"], fn(extra) {
+    let project = two_target_each_project(extra)
+    effect_each(project, list.map(expected, fn(entry) { entry.0 }))
+    |> should.equal(expected)
+    graded.run_effect_formatted(project, "m.go", graded.Prose)
+    |> should.equal(Ok(
+      "m.go has effects [Disk, Net]\n  source: in-memory inference",
+    ))
+    cleanup(project)
+  })
+}
+
+pub fn effect_each_gives_each_miss_the_failed_load_test() {
+  // A module that does not parse fails the context load: the names the spec
+  // decides still answer, before and after the misses, and each miss carries
+  // the parse failure rather than a not-found.
+  let project =
+    write_fixture("build/graded_effect_each_broken", [
+      #("gleam.toml", "name = \"probe\"\n"),
+      #("probe.graded", "effects m.go : [Disk]\nassume m.Box.run : [Net]\n"),
+      #(
+        "src/m.gleam",
+        "pub type Box {\n  Box(run: fn() -> Nil)\n}\n\npub fn go() -> Nil {\n  Nil\n}\n\nfn hidden() -> Nil {\n  Nil\n}\n",
+      ),
+      #("src/broken.gleam", "pub fn bad("),
+    ])
+  let broken =
+    Error(graded.GleamParseError(
+      project <> "/src/broken.gleam",
+      glance.UnexpectedEndOfInput,
+    ))
+  effect_each(project, ["m.absent", "m.go", "m.hidden", "m.Box.run"])
+  |> should.equal([
+    #("m.absent", broken),
+    #("m.go", Ok("// resolved from your spec\neffects m.go : [Disk]")),
+    #("m.hidden", broken),
+    #(
+      "m.Box.run",
+      Ok(
+        "// assumed by a field `assume` in your spec\nassume m.Box.run : [Net]",
+      ),
+    ),
+  ])
+  cleanup(project)
+}
+
+pub fn effect_each_gives_every_name_a_setup_error_test() {
+  let config = write_fixture("build/each_toml", [#("gleam.toml", "name = [\n")])
+  let toml = config <> "/gleam.toml"
+  let invalid = Error(graded.InvalidConfig(toml, toml <> " is not valid TOML"))
+  effect_each(config, ["m.go", "m.absent"])
+  |> should.equal([#("m.go", invalid), #("m.absent", invalid)])
+  let spec = support.write_unparseable_spec_project("build/each_spec")
+  let path = spec <> "/proj.graded"
+  let unparsed = Error(graded.GradedParseError(path, "2: not a graded line"))
+  effect_each(spec, ["m.go", "m.absent"])
+  |> should.equal([#("m.go", unparsed), #("m.absent", unparsed)])
+  list.each([config, spec], cleanup)
 }
