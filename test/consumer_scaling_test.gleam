@@ -302,26 +302,25 @@ pub fn every_case_reads_its_answer_inside_the_bound_test() {
   })
 }
 
-// Every case as a project the compiler checks, against the standard library
-// this repository builds with.
+// Every case as a module of one project the compiler checks, against the
+// standard library this repository builds with.
 pub fn every_case_compiles_test() {
   let stdlib = absolute("build/packages/gleam_stdlib")
-  list.each(cases(), fn(case_) {
-    let directory = absolute("build/consumer_scaling_check")
-    let _ = simplifile.delete(directory)
-    write_files(directory, [
-      #("gleam.toml", gleam_toml("{ path = \"" <> stdlib <> "\" }")),
-      #("src/probe.gleam", case_.main),
-      #("src/probe/model.gleam", model_source()),
-      #("src/probe/ffi.gleam", ffi_source()),
-    ])
-    let checked =
-      shellout.command(run: "gleam", with: ["check"], in: directory, opt: [])
-      |> result.map_error(fn(failure) { failure.1 })
-    let _ = simplifile.delete(directory)
-    #(case_.name, result.map(checked, fn(_) { Nil }))
-    |> should.equal(#(case_.name, Ok(Nil)))
-  })
+  let directory = absolute("build/consumer_scaling_check")
+  let _ = simplifile.delete(directory)
+  write_files(directory, [
+    #("gleam.toml", gleam_toml("{ path = \"" <> stdlib <> "\" }")),
+    #("src/probe/model.gleam", model_source()),
+    #("src/probe/ffi.gleam", ffi_source()),
+    ..list.map(cases(), fn(case_) {
+      #("src/probe/" <> slug(case_.name) <> ".gleam", case_.main)
+    })
+  ])
+  let checked =
+    shellout.command(run: "gleam", with: ["check"], in: directory, opt: [])
+    |> result.map_error(fn(failure) { failure.1 })
+  let _ = simplifile.delete(directory)
+  checked |> result.map(fn(_) { Nil }) |> should.equal(Ok(Nil))
 }
 
 fn write_files(directory: String, files: List(#(String, String))) -> Nil {
