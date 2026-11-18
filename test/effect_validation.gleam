@@ -1,6 +1,7 @@
 // Validate graded's answers against what generated programs actually do.
 //
 //   gleam run -m effect_validation -- [--seed N] [--cases N] [--graded DIR]
+//     [--shard I/N]
 //
 // Erlang cases are drawn with a fixed seed from shapes that hand an effectful
 // leaf over in a list, a tuple, a record, a result, a type variable, a map, a
@@ -41,6 +42,9 @@
 //
 // `--graded DIR` answers with the graded checkout at DIR, so the same cases can
 // be run against another revision.
+//
+// `--shard I/N` runs the blocks whose position K in `main`'s list, counted from
+// 0, has K % N == I - 1, the stale control among them.
 
 import argv
 import filepath
@@ -59,107 +63,99 @@ import shellout
 import simplifile
 
 pub fn main() -> Nil {
-  let options = parse_options(argv.load().arguments, Options(1, 40, "."))
+  let options = parse_options(argv.load().arguments, Options(1, 40, ".", 1, 1))
   let graded = absolute(options.graded)
   let root = absolute("build/effect_validation")
   let _ = simplifile.delete(root)
-  let erlang =
-    validate(graded, root <> "/erlang", "erlang", erlang_cases(options))
-  let javascript =
-    validate(graded, root <> "/javascript", "javascript", javascript_cases())
-  let boundary = boundary_cases(graded, root <> "/boundary")
-  let two_target = two_target_cases(graded, root <> "/targets")
-  let matrix = matrix_cases(graded, root <> "/matrix")
-  let publication = publication_cases(graded, root <> "/publication")
-  let installed = installed_cases(graded, root <> "/installed")
-  let single_pass = single_pass_cases(graded, root <> "/single_pass")
-  let recursion = recursion_dimension_cases(graded, root <> "/recursion")
-  let externals = external_dimension_cases(graded, root <> "/externals")
-  let operators = operator_dimension_cases(graded, root <> "/operators")
-  let fans = fan_dimension_cases(graded, root <> "/fans")
-  let translation = translation_dimension_cases(graded, root <> "/translation")
-  let written = written_path_dimension_cases(graded, root <> "/written")
-  let pair_cost = pair_cost_cases(root <> "/pair_cost")
-  let refusal_cost = refusal_cost_cases(graded, root <> "/refusal_cost")
-  let scaling = scaling_dimension_cases(root <> "/scaling")
-  let one_target = one_target_cases(graded, root <> "/one_target")
-  let location = location_cases(root <> "/location")
-  let control = stale_control(graded, root <> "/stale")
-  let failures =
-    list.flatten([
-      erlang.failures,
-      javascript.failures,
-      boundary.failures,
-      two_target.failures,
-      matrix.failures,
-      publication.failures,
-      installed.failures,
-      single_pass.failures,
-      recursion.failures,
-      externals.failures,
-      operators.failures,
-      fans.failures,
-      translation.failures,
-      written.failures,
-      pair_cost.failures,
-      refusal_cost.failures,
-      scaling.failures,
-      one_target.failures,
-      location.failures,
-    ])
+  let blocks = [
+    Cases("Erlang", fn() {
+      validate(graded, root <> "/erlang", "erlang", erlang_cases(options))
+    }),
+    Cases("JavaScript", fn() {
+      validate(graded, root <> "/javascript", "javascript", javascript_cases())
+    }),
+    Cases("module-boundary", fn() {
+      boundary_cases(graded, root <> "/boundary")
+    }),
+    Cases("two-target", fn() { two_target_cases(graded, root <> "/targets") }),
+    Cases("two-target matrix", fn() { matrix_cases(graded, root <> "/matrix") }),
+    Cases("published-spec", fn() {
+      publication_cases(graded, root <> "/publication")
+    }),
+    Cases("installed-package", fn() {
+      installed_cases(graded, root <> "/installed")
+    }),
+    Cases("single-pass", fn() {
+      single_pass_cases(graded, root <> "/single_pass")
+    }),
+    Cases("recursion", fn() {
+      recursion_dimension_cases(graded, root <> "/recursion")
+    }),
+    Cases("declared-external", fn() {
+      external_dimension_cases(graded, root <> "/externals")
+    }),
+    Cases("operator recursion", fn() {
+      operator_dimension_cases(graded, root <> "/operators")
+    }),
+    Cases("branching walk", fn() {
+      fan_dimension_cases(graded, root <> "/fans")
+    }),
+    Cases("line translation", fn() {
+      translation_dimension_cases(graded, root <> "/translation")
+    }),
+    Cases("written paths", fn() {
+      written_path_dimension_cases(graded, root <> "/written")
+    }),
+    Cases("pair-configuration cost", fn() {
+      pair_cost_cases(root <> "/pair_cost")
+    }),
+    Cases("refusal cost", fn() {
+      refusal_cost_cases(graded, root <> "/refusal_cost")
+    }),
+    Cases("scaling", fn() { scaling_dimension_cases(root <> "/scaling") }),
+    Cases("one-target", fn() { one_target_cases(graded, root <> "/one_target") }),
+    Cases("dependency location", fn() { location_cases(root <> "/location") }),
+    Control(fn() { stale_control(graded, root <> "/stale") }),
+  ]
+  let ran =
+    list.index_map(blocks, fn(block, k) {
+      case k % options.shards == options.shard - 1, block {
+        False, _ -> #([], [], [])
+        True, Cases(label, run) -> {
+          let outcome = run()
+          #([coverage(label, outcome)], outcome.failures, [])
+        }
+        True, Control(run) -> #([], [], [run()])
+      }
+    })
+  let failures = list.flat_map(ran, fn(share) { share.1 })
+  let controls = list.flat_map(ran, fn(share) { share.2 })
   io.println(
     "effect_validation: seed "
     <> int.to_string(options.seed)
     <> ", "
-    <> coverage("Erlang", erlang)
-    <> ", "
-    <> coverage("JavaScript", javascript)
-    <> ", "
-    <> coverage("module-boundary", boundary)
-    <> ", "
-    <> coverage("two-target", two_target)
-    <> ", "
-    <> coverage("two-target matrix", matrix)
-    <> ", "
-    <> coverage("published-spec", publication)
-    <> ", "
-    <> coverage("installed-package", installed)
-    <> ", "
-    <> coverage("single-pass", single_pass)
-    <> ", "
-    <> coverage("recursion", recursion)
-    <> ", "
-    <> coverage("declared-external", externals)
-    <> ", "
-    <> coverage("operator recursion", operators)
-    <> ", "
-    <> coverage("branching walk", fans)
-    <> ", "
-    <> coverage("line translation", translation)
-    <> ", "
-    <> coverage("written paths", written)
-    <> ", "
-    <> coverage("pair-configuration cost", pair_cost)
-    <> ", "
-    <> coverage("refusal cost", refusal_cost)
-    <> ", "
-    <> coverage("scaling", scaling)
-    <> ", "
-    <> coverage("one-target", one_target)
-    <> ", "
-    <> coverage("dependency location", location)
+    <> string.join(list.flat_map(ran, fn(share) { share.0 }), ", ")
     <> ", "
     <> int.to_string(list.length(failures))
     <> " counterexample(s)",
   )
   list.each(failures, io.println)
-  case control {
-    Ok(text) | Error(text) -> io.println(text)
-  }
-  case failures, control {
-    [], Ok(_) -> Nil
+  list.each(controls, fn(control) {
+    case control {
+      Ok(text) | Error(text) -> io.println(text)
+    }
+  })
+  case failures, list.all(controls, result.is_ok) {
+    [], True -> Nil
     _, _ -> halt(1)
   }
+}
+
+// One block of the run: cases with the label their coverage is printed under,
+// or the stale control.
+type Block {
+  Cases(label: String, run: fn() -> Outcome)
+  Control(run: fn() -> Result(String, String))
 }
 
 fn coverage(target: String, outcome: Outcome) -> String {
@@ -172,7 +168,7 @@ fn coverage(target: String, outcome: Outcome) -> String {
 }
 
 type Options {
-  Options(seed: Int, cases: Int, graded: String)
+  Options(seed: Int, cases: Int, graded: String, shard: Int, shards: Int)
 }
 
 fn parse_options(arguments: List(String), options: Options) -> Options {
@@ -189,6 +185,13 @@ fn parse_options(arguments: List(String), options: Options) -> Options {
       )
     ["--graded", value, ..rest] ->
       parse_options(rest, Options(..options, graded: value))
+    ["--shard", value, ..rest] ->
+      case string.split(value, "/") |> list.map(int.parse) {
+        [Ok(shard), Ok(shards)] if 1 <= shard && shard <= shards ->
+          parse_options(rest, Options(..options, shard:, shards:))
+        _ -> parse_options(rest, Options(..options, shard: 1, shards: 1))
+      }
+    ["--shard"] -> Options(..options, shard: 1, shards: 1)
     [_, ..rest] -> parse_options(rest, options)
     [] -> options
   }
