@@ -330,6 +330,43 @@ pub fn absolute_path(path: String, working: String) -> String {
   |> string.join("/")
 }
 
+// A directory argument, `.`/`..`/empty segments collapsed and its kind kept.
+pub fn normalized_directory(directory: String) -> String {
+  case string.starts_with(directory, "/"), normalized_path(directory) {
+    True, _ -> absolute_path(directory, "/")
+    False, "" -> "."
+    False, normalized -> normalized
+  }
+}
+
+// The directory above `path`, spelled from it: `path/..` for only `..`
+// segments (itself at `/`, read from `working`), else its leading part or `.`.
+pub fn parent_directory(path: String, working: String) -> String {
+  let climbing = list.all(string.split(path, "/"), fn(s) { s == ".." })
+  case climbing, absolute_path(path, working), filepath.directory_name(path) {
+    True, "/", _ -> path
+    True, _, _ -> path <> "/.."
+    False, _, "" -> "."
+    False, _, parent -> parent
+  }
+}
+
+// A `..`-leading `argument` spelled from `root`, an ancestor not among its
+// leading segments, both read from `working`; any other comes back unchanged.
+pub fn respelled(argument: String, root: String, working: String) -> String {
+  let above = list.length(filepath.split(absolute_path(root, working)))
+  case
+    string.starts_with(argument <> "/", "../")
+    && !string.starts_with(argument <> "/", root <> "/")
+  {
+    True ->
+      list.drop(filepath.split(absolute_path(argument, working)), above)
+      |> list.prepend(root)
+      |> string.join("/")
+    False -> argument
+  }
+}
+
 // One segment onto the collapsed prefix, which is held reversed. A `..` drops
 // the segment before it; with nothing before it to drop, or another `..` there,
 // it is kept and the path goes on climbing.
