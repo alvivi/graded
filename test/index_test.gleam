@@ -2,6 +2,7 @@
 // generated inputs, the index beside the scan it replaced, whose predicate is
 // written out here.
 
+import generators
 import glance
 import gleam/dict
 import gleam/int
@@ -33,69 +34,6 @@ fn segment_gen() -> qcheck.Generator(String) {
 
 fn segments_gen(longest: Int) -> qcheck.Generator(List(String)) {
   qcheck.generic_list(segment_gen(), qcheck.bounded_int(0, longest))
-}
-
-// `segments` written out with what leaves the directory it names unchanged,
-// chosen per segment by `plan`: a `.` before it, a name and `..` before it, or
-// a repeated slash, and a trailing slash after the last. A relative spelling
-// never starts with a slash, and names its own directory `.`.
-fn spelled(segments: List(String), plan: List(Int), absolute: Bool) -> String {
-  let parts =
-    list.zip(segments, plan)
-    |> list.index_map(fn(pair, index) {
-      case pair.1, index, absolute {
-        1, _, _ -> [".", pair.0]
-        2, _, _ -> ["a", "..", pair.0]
-        3, 0, False -> [".", pair.0]
-        3, _, _ -> ["", pair.0]
-        _, _, _ -> [pair.0]
-      }
-    })
-    |> list.flatten
-  let trailing = case list.last(plan) {
-    Ok(4) -> [""]
-    _ -> []
-  }
-  case absolute, list.append(parts, trailing) {
-    True, written -> "/" <> string.join(written, "/")
-    False, [] -> "."
-    False, written -> string.join(written, "/")
-  }
-}
-
-// The segments that lead from the directory `from` to `to`, both absolute
-// and written as segments: up to their common prefix, then down.
-fn relative_segments(from: List(String), to: List(String)) -> List(String) {
-  let common = common_length(from, to, 0)
-  list.append(
-    list.repeat("..", list.length(from) - common),
-    list.drop(to, common),
-  )
-}
-
-fn common_length(left: List(String), right: List(String), count: Int) -> Int {
-  case left, right {
-    [a, ..left], [b, ..right] if a == b -> common_length(left, right, count + 1)
-    _, _ -> count
-  }
-}
-
-// One spelling of the absolute directory `target`, read from `working`.
-fn spelling_gen(
-  target: List(String),
-  working: List(String),
-) -> qcheck.Generator(String) {
-  use #(absolute, plan) <- qcheck.map(qcheck.tuple2(
-    qcheck.bool(),
-    qcheck.fixed_length_list_from(
-      qcheck.bounded_int(0, 4),
-      list.length(target) + list.length(working) + 1,
-    ),
-  ))
-  case absolute {
-    True -> spelled(target, plan, True)
-    False -> spelled(relative_segments(working, target), plan, False)
-  }
 }
 
 type Membership {
@@ -130,13 +68,13 @@ fn membership_gen() -> qcheck.Generator(Membership) {
   use spelled_roots <- qcheck.bind(
     list.fold(list.reverse(roots), qcheck.return([]), fn(acc, root) {
       use #(spelling, rest) <- qcheck.map(qcheck.tuple2(
-        spelling_gen(root, working),
+        generators.spelling_gen(root, working),
         acc,
       ))
       [spelling, ..rest]
     }),
   )
-  use spelled_path <- qcheck.map(spelling_gen(path, working))
+  use spelled_path <- qcheck.map(generators.spelling_gen(path, working))
   Membership(working:, roots:, path:, spelled_roots:, spelled_path:)
 }
 

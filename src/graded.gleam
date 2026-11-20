@@ -183,7 +183,7 @@ pub fn main() -> Nil {
       }
 
     ["format", "--check", ..rest] ->
-      with_directory(rest, fn(directory) {
+      with_directory(rest, ".", fn(directory) {
         case run_format_check(directory) {
           Ok(Nil) -> Nil
           Error(error) -> fail(error)
@@ -191,7 +191,7 @@ pub fn main() -> Nil {
       })
 
     ["format", ..rest] ->
-      with_directory(rest, fn(directory) {
+      with_directory(rest, ".", fn(directory) {
         case run_format(directory) {
           Ok(Nil) -> Nil
           Error(error) -> fail(error)
@@ -204,9 +204,9 @@ pub fn main() -> Nil {
         run_infer_command(mode, directory)
       })
 
-    ["check", ..rest] -> with_directory(rest, run_check)
+    ["check", ..rest] -> with_directory(rest, "src", run_check)
 
-    ["pack", ..rest] -> with_directory(rest, pack_and_report)
+    ["pack", ..rest] -> with_directory(rest, ".", pack_and_report)
 
     ["effect", ..rest] ->
       report(cli.parse_effect_args(rest), fn(arguments) {
@@ -237,11 +237,17 @@ pub fn main() -> Nil {
   }
 }
 
+// `pack`'s argument is checked first; a `..`-leading one walks normalized.
 fn pack_and_report(directory: String) -> Nil {
-  case pack_project(resolve_package_root(directory)) {
-    Ok(message) -> io.println(message)
-    Error(error) -> fail(error)
-  }
+  report(Ok(directory), fn(directory) {
+    use Nil <- result.try(check_directory(directory))
+    pack_project(
+      resolve_package_root(case directory {
+        ".." | "../" <> _ -> config.normalized_directory(directory)
+        _ -> directory
+      }),
+    )
+  })
 }
 
 // Print an error to stderr and exit non-zero: the shared failure path for
@@ -269,12 +275,17 @@ fn report(
 }
 
 // Run `command` with the optional directory argument shared by
-// check/infer/format/pack, or print the usage error `cli.parse_directory_args`
-// rejected it with.
-fn with_directory(rest: List(String), command: fn(String) -> Nil) -> Nil {
-  case cli.parse_directory_args(rest) {
-    Ok(directory) -> command(directory)
-    Error(error) -> usage_error(cli.format_argument_error(error))
+// check/format/pack, `default` where none is given, or print the usage error
+// `cli.parse_directory_args` rejected it with.
+fn with_directory(
+  rest: List(String),
+  default: String,
+  command: fn(String) -> Nil,
+) -> Nil {
+  case rest, cli.parse_directory_args(rest) {
+    [], _ -> command(default)
+    _, Ok(directory) -> command(directory)
+    _, Error(error) -> usage_error(cli.format_argument_error(error))
   }
 }
 
@@ -627,6 +638,7 @@ pub fn check_project(
 fn check_project_targets(
   directory: String,
 ) -> Result(#(String, List(#(Option(String), List(CheckResult)))), GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use ctx <- result.try(load_project_context(directory))
   let spec_file = ctx.sources.cfg.spec_file
   let per_target = case ctx.per_target {
@@ -3471,6 +3483,7 @@ fn bare_type_field(
 /// Returns `FunctionNotFound` when the name isn't a function of a project
 /// module. Nothing is written to disk.
 pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use #(module_path, function) <- result.try(
     annotation.split_function_name(name)
     |> result.replace_error(FunctionNotFound(name)),
@@ -3498,8 +3511,11 @@ pub fn run_effect_each(
   directory: String,
   names: List(String),
 ) -> List(#(String, Result(EffectAnswer, GradedError))) {
-  let directory = source_scope(directory).analysed
-  let from_spec = spec_lookup(directory)
+  let analysed =
+    check_directory(directory)
+    |> result.map(fn(_) { source_scope(directory).analysed })
+  let from_spec = result.try(analysed, spec_lookup)
+  let load = fn() { result.try(analysed, load_project_context) }
   // `loaded` is the project context, loaded at the first name the spec leaves
   // open.
   list.map_fold(names, None, fn(loaded, name) {
@@ -3507,8 +3523,7 @@ pub fn run_effect_each(
       Error(error) -> #(loaded, #(name, Error(error)))
       Ok(Ok(found)) -> #(loaded, #(name, Ok(found)))
       Ok(Error(Nil)) -> {
-        let ctx =
-          option.lazy_unwrap(loaded, fn() { load_project_context(directory) })
+        let ctx = option.lazy_unwrap(loaded, load)
         #(Some(ctx), #(name, result.try(ctx, project_answer(_, name))))
       }
     }
@@ -3521,6 +3536,7 @@ pub fn run_why_each(
   directory: String,
   names: List(String),
 ) -> Result(List(#(String, Result(String, GradedError))), GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use sources <- result.try(load_project_sources(directory))
   use ctx <- result.map(project_context(sources))
   list.map(names, fn(name) {
@@ -3807,6 +3823,7 @@ pub fn catalog_show(
 // diagnostic's output format is the kind of surface a 1.0 should not freeze.
 @internal
 pub fn run_coverage(directory: String) -> Result(String, GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use ctx <- result.map(load_project_context(directory))
   let rows = context_classification_checks(ctx)
   let ProjectContext(sources:, typed_path_dependencies:, ..) = ctx
@@ -4157,7 +4174,7 @@ pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
     // the process runs in.
     cli.ListCatalog -> Ok(catalog_manifest_path(working_directory()))
     cli.ShowCatalog(directory:, ..) -> {
-      use _ <- result.map(read_directory(directory))
+      use _ <- result.map(check_directory(directory))
       catalog_manifest_path(directory)
     }
   })
@@ -4620,14 +4637,16 @@ fn working_directory() -> String {
   simplifile.current_directory() |> result.unwrap(".")
 }
 
-// Read `directory` for the sake of failing on one that isn't there. A directory
-// argument names the project whose manifest is read, and a missing one would
-// otherwise walk up to whichever project the process sits in and answer for
-// that.
-fn read_directory(directory: String) -> Result(Nil, GradedError) {
-  simplifile.read_directory(directory)
-  |> result.replace(Nil)
-  |> result.map_error(DirectoryReadError(directory, _))
+// Fail on a `directory` the OS does not resolve to a directory, without listing
+// it. A directory argument names the project whose manifest is read, and a
+// missing one would otherwise walk up to whichever project the process sits in
+// and answer for that.
+fn check_directory(directory: String) -> Result(Nil, GradedError) {
+  case result.map(simplifile.file_info(directory), simplifile.file_info_type) {
+    Ok(simplifile.Directory) -> Ok(Nil)
+    Ok(_) -> Error(DirectoryReadError(directory, simplifile.Enotdir))
+    Error(cause) -> Error(DirectoryReadError(directory, cause))
+  }
 }
 
 // Render `request` against the catalog directory and manifest it names. One
@@ -4817,6 +4836,7 @@ fn compare_catalog_files(
 /// source of truth for hand-written `check`/`assume` lines and
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use cfg <- result.try(read_config(directory))
   use formatted <- result.try(format_one_spec(cfg.spec_file))
   case formatted {
@@ -4839,6 +4859,7 @@ pub fn run_format_stdin(input: String) -> Result(String, GradedError) {
 /// Check that the project's spec file is already formatted. Returns error
 /// with the file path if it isn't. Used by CI as `format --check`.
 pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use cfg <- result.try(read_config(directory))
   use formatted <- result.try(format_one_spec(cfg.spec_file))
   case formatted {
@@ -4918,7 +4939,10 @@ type SourceScope {
 }
 
 fn source_scope(directory: String) -> SourceScope {
-  let scoped = scope_to_source_directory(normalize_directory(directory))
+  let directory = config.normalized_directory(directory)
+  let root = resolve_package_root(directory)
+  let cwd = working_directory()
+  let scoped = scope_to_source_directory(config.respelled(directory, root, cwd))
   case enclosing_source_root(scoped) {
     Some(root) -> SourceScope(analysed: root, reported: scoped)
     None -> SourceScope(analysed: scoped, reported: scoped)
@@ -4934,10 +4958,7 @@ fn source_scope(directory: String) -> SourceScope {
 // them and what this repo's own `test/fixtures` workflow depends on.
 fn enclosing_source_root(directory: String) -> Option(String) {
   let root = resolve_package_root(directory)
-  let source_root = case root {
-    "." -> "src"
-    _ -> filepath.join(root, "src")
-  }
+  let source_root = config.normalized_directory(filepath.join(root, "src"))
   case within_directory(source_root, directory) {
     True -> Some(source_root)
     False -> None
@@ -4946,32 +4967,11 @@ fn enclosing_source_root(directory: String) -> Option(String) {
 
 // Whether `path` names a file inside `directory`'s subtree.
 //
-// A prefix test, so both sides must already be normalized — `normalize_directory`
-// settles the argument every scope derives from, and the paths compared against
-// it come from a walk of that same directory.
+// A prefix test, so both sides must already be normalized —
+// `config.normalized_directory` settles the argument every scope derives from,
+// and the paths compared against it come from a walk of that same directory.
 fn within_directory(directory: String, path: String) -> Bool {
   string.starts_with(path, directory <> "/")
-}
-
-// The caller's directory argument in the one spelling everything downstream
-// compares against. `src/sub`, `./src/sub` and `src/sub/` name one directory,
-// but a raw prefix test reads them as three: a trailing separator builds a
-// `src/sub//` prefix that matches none of the walked files, and a `./` prefix
-// fails to match the package's `src/`, so the subtree is analysed as its own
-// root under the wrong module paths. Either way `check` lines stop matching and
-// the run reports success having verified nothing.
-//
-// `.` survives as itself rather than expanding to the empty string: it is the
-// production layout's root, which `scope_to_source_directory` and
-// `source_root_for` both key on by name.
-fn normalize_directory(directory: String) -> String {
-  case filepath.expand(directory) {
-    Ok("") -> "."
-    Ok(expanded) -> expanded
-    // Only a relative path climbing past its own root fails to expand. It names
-    // nothing to scan, so it travels on unchanged and fails where it is read.
-    Error(Nil) -> directory
-  }
 }
 
 // Scope a command's target directory to source files. When the argument is a
@@ -5785,6 +5785,7 @@ fn infer_runs(
   // A package has one spec file, so a scoped `infer` is a whole-package `infer`:
   // a spec written from a subtree's modules alone would state the package's
   // public surface wrongly rather than partially.
+  use Nil <- result.try(check_directory(directory))
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
   use #(targets, shared) <- result.try(case named_targets(cfg) {
@@ -7003,7 +7004,7 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
   // Normalized here too: `format` reaches the spec through this function
   // without going through `source_scope`, so this is where its argument's
   // spelling is settled. A no-op for the callers already scoped.
-  let project_root = spec_root_for(normalize_directory(directory))
+  let project_root = spec_root_for(config.normalized_directory(directory))
   let toml_path = filepath.join(project_root, "gleam.toml")
   use raw <- result.try(case config.read(toml_path) {
     Ok(cfg) -> Ok(cfg)
@@ -7032,15 +7033,19 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
 // the same walk-up `resolve_package_root` uses for dependency state, so an
 // out-of-tree source like `../other/src` roots its spec under `../other` rather
 // than writing it back under the passed directory. The one exception is a
-// relative source directory nested in the current project whose only ancestor
-// `gleam.toml` is the cwd: it keeps acting as its own root (the `src` layout
-// aside), so pointing graded at a subtree of the current project — e.g. a test
+// source directory whose walk ends at the cwd, however that is spelled, and
+// that is not the package's `src/` or inside it: it keeps acting as its own
+// root, so pointing graded at a subtree of the current project — e.g. a test
 // fixture directory — doesn't write the spec into the surrounding project.
 fn spec_root_for(directory: String) -> String {
   let walked = resolve_package_root(directory)
-  let source_root = source_root_for(directory)
-  case walked == "." && source_root != "." {
-    True -> source_root
+  let cwd = working_directory()
+  let source_root = config.normalized_directory(filepath.join(walked, "src"))
+  case
+    { walked == "." || config.absolute_path(walked, cwd) == cwd }
+    && !within_directory(source_root, directory <> "/")
+  {
+    True -> directory
     False -> walked
   }
 }
@@ -7051,21 +7056,14 @@ fn spec_root_for(directory: String) -> String {
 // `gleam.toml`, so a source directory nested inside a project (e.g. a test
 // fixture tree) inherits that project's installed dependencies rather than the
 // process cwd's. Falls back to the source directory when no `gleam.toml` is
-// found anywhere up the tree.
+// found anywhere up the tree. The walk starts at the directory itself, or at
+// the cwd for `src`, the production layout.
 fn resolve_package_root(directory: String) -> String {
-  let source_root = source_root_for(directory)
-  find_gleam_toml_dir(source_root, source_root)
-}
-
-// The directory a source argument is rooted at. `src` is the production layout,
-// whose root is the current directory; any other directory acts as its own
-// root. Shared by spec/cache resolution (`read_config`) and the dependency-root
-// walk-up so the two stay in step.
-fn source_root_for(directory: String) -> String {
-  case directory {
+  let source_root = case directory {
     "src" -> "."
     _ -> directory
   }
+  find_gleam_toml_dir(source_root, source_root)
 }
 
 // Dependency `.graded` specs live under `<root>/build/packages/<dep>/`.
@@ -8563,12 +8561,10 @@ fn find_gleam_toml_dir(dir: String, original: String) -> String {
   case simplifile.is_file(filepath.join(dir, "gleam.toml")) {
     Ok(True) -> dir
     _ -> {
-      let parent = case filepath.directory_name(dir) {
-        "" -> "."
-        other -> other
-      }
+      let parent = config.parent_directory(dir, working_directory())
       // Halt at a fixed point so an exhausted walk falls back to the source dir.
-      // `.` is its own fixed point, halting a relative walk at the cwd. An
+      // `.` is its own fixed point, halting a relative walk at the cwd, as is a
+      // `..` climb at `/` (at its first `..` with no cwd to read). An
       // absolute walk halts at `/`, whose `directory_name` is `""` → `.`: left
       // unchecked it would fold into the cwd and wrongly adopt that project's
       // root, so `/` halts explicitly.

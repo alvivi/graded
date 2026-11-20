@@ -4,7 +4,9 @@
 // sources.
 
 import filepath
+import generators
 import glance
+import gleam/bool
 import gleam/dict
 import gleam/list
 import gleam/set
@@ -13,6 +15,7 @@ import gleeunit/should
 import graded/internal/config
 import graded/internal/extract
 import graded/internal/types
+import qcheck
 import simplifile
 import support
 
@@ -447,4 +450,60 @@ pub fn run() { auth.check() }"
   |> dict.values()
   |> list.contains(leaf_module)
   |> should.be_true()
+}
+
+// Directory arguments: one spelling, the walk up from `..`, the respelling.
+
+pub fn a_directory_argument_is_normalized_keeping_its_kind_test() {
+  let normalized = list.map(_, config.normalized_directory)
+  normalized(["../app/src/", "src//sub/", "./", ".", "a/../.."])
+  |> should.equal(["../app/src", "src/sub", ".", ".", ".."])
+  normalized(["/../tmp/x/", "/t/./a/../b"]) |> should.equal(["/tmp/x", "/t/b"])
+}
+
+fn absolute(segments: List(String)) -> String {
+  "/" <> string.join(segments, "/")
+}
+
+// A cwd, a directory sharing a prefix with it, an ancestor's depth, a spelling.
+fn climb_gen() -> qcheck.Generator(#(List(String), List(String), Int, String)) {
+  let name = qcheck.from_generators(qcheck.return("a"), [qcheck.return("src")])
+  let names = qcheck.generic_list(name, qcheck.bounded_int(0, 3))
+  let count = qcheck.bounded_int(0, 3)
+  use #(working, shared, tail) <- qcheck.bind(qcheck.tuple3(names, count, names))
+  let target = list.append(list.take(working, shared), tail)
+  let depth = qcheck.bounded_int(0, list.length(target))
+  let spelling = generators.spelling_gen(target, working)
+  use #(depth, spelling) <- qcheck.map(qcheck.tuple2(depth, spelling))
+  #(working, target, depth, spelling)
+}
+
+pub fn the_parent_of_a_climbing_path_is_the_directory_above_it_test() {
+  use #(working, target, _, _) <- qcheck.given(climb_gen())
+  let path = string.join(generators.relative_segments(working, target), "/")
+  let above = case filepath.directory_name(absolute(target)) {
+    "" -> "/"
+    above -> above
+  }
+  use <- bool.guard(when: !string.starts_with(path, ".."), return: Nil)
+  config.parent_directory(path, absolute(working))
+  |> config.absolute_path(absolute(working))
+  |> should.equal(above)
+}
+
+pub fn a_respelled_argument_names_its_directory_from_its_root_test() {
+  use #(working, target, depth, spelling) <- qcheck.given(climb_gen())
+  let argument = config.normalized_directory(spelling)
+  let root = generators.relative_segments(working, list.take(target, depth))
+  let respelled =
+    config.respelled(argument, string.join(root, "/"), absolute(working))
+  case string.starts_with(argument, "..") {
+    False -> respelled |> should.equal(argument)
+    True -> {
+      config.absolute_path(respelled, absolute(working))
+      |> should.equal(absolute(target))
+      list.take(string.split(respelled, "/"), list.length(root))
+      |> should.equal(root)
+    }
+  }
 }
