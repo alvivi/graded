@@ -169,3 +169,24 @@ pub fn infer_on_a_folder_writes_its_own_spec_test() {
   |> should.equal(Ok(configured))
   support.cleanup(outer)
 }
+
+pub fn a_directory_the_os_does_not_read_is_an_error_test() {
+  let no_src =
+    support.write_fixture(root <> "/no_src", [
+      #("gleam.toml", toml("no_src", "1.0.0")),
+      #("no_src.graded", "assume m.f : [Time]\ncheck m.go : []\n"),
+      #("m.gleam", go),
+    ])
+  // A regression: `pack` walked on to the package's tarball.
+  graded(no_src, ["pack", "src/typo"])
+  |> should.equal(error("Could not read directory: src/typo"))
+  // Controls: `catalog`, a bare non-directory word, and a no-argument `format`.
+  graded(no_src, ["catalog", "gleam_stdlib", "src/typo"])
+  |> should.equal(error("Could not read directory: src/typo"))
+  let usage = "\nRun `graded --help` for usage."
+  graded(no_src, ["missing/../src"])
+  |> should.equal(error("unknown command `missing/../src`" <> usage))
+  graded(no_src, ["format", "--check"])
+  |> should.equal(error("Unformatted .graded files:\n  no_src.graded"))
+  support.cleanup(no_src)
+}

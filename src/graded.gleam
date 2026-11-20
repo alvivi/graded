@@ -183,7 +183,7 @@ pub fn main() -> Nil {
       }
 
     ["format", "--check", ..rest] ->
-      with_directory(rest, "src", fn(directory) {
+      with_directory(rest, ".", fn(directory) {
         case run_format_check(directory) {
           Ok(Nil) -> Nil
           Error(error) -> fail(error)
@@ -191,7 +191,7 @@ pub fn main() -> Nil {
       })
 
     ["format", ..rest] ->
-      with_directory(rest, "src", fn(directory) {
+      with_directory(rest, ".", fn(directory) {
         case run_format(directory) {
           Ok(Nil) -> Nil
           Error(error) -> fail(error)
@@ -638,6 +638,7 @@ pub fn check_project(
 fn check_project_targets(
   directory: String,
 ) -> Result(#(String, List(#(Option(String), List(CheckResult)))), GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use ctx <- result.try(load_project_context(directory))
   let spec_file = ctx.sources.cfg.spec_file
   let per_target = case ctx.per_target {
@@ -3482,6 +3483,7 @@ fn bare_type_field(
 /// Returns `FunctionNotFound` when the name isn't a function of a project
 /// module. Nothing is written to disk.
 pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use #(module_path, function) <- result.try(
     annotation.split_function_name(name)
     |> result.replace_error(FunctionNotFound(name)),
@@ -3509,8 +3511,11 @@ pub fn run_effect_each(
   directory: String,
   names: List(String),
 ) -> List(#(String, Result(EffectAnswer, GradedError))) {
-  let directory = source_scope(directory).analysed
-  let from_spec = spec_lookup(directory)
+  let analysed =
+    check_directory(directory)
+    |> result.map(fn(_) { source_scope(directory).analysed })
+  let from_spec = result.try(analysed, spec_lookup)
+  let load = fn() { result.try(analysed, load_project_context) }
   // `loaded` is the project context, loaded at the first name the spec leaves
   // open.
   list.map_fold(names, None, fn(loaded, name) {
@@ -3518,8 +3523,7 @@ pub fn run_effect_each(
       Error(error) -> #(loaded, #(name, Error(error)))
       Ok(Ok(found)) -> #(loaded, #(name, Ok(found)))
       Ok(Error(Nil)) -> {
-        let ctx =
-          option.lazy_unwrap(loaded, fn() { load_project_context(directory) })
+        let ctx = option.lazy_unwrap(loaded, load)
         #(Some(ctx), #(name, result.try(ctx, project_answer(_, name))))
       }
     }
@@ -3532,6 +3536,7 @@ pub fn run_why_each(
   directory: String,
   names: List(String),
 ) -> Result(List(#(String, Result(String, GradedError))), GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use sources <- result.try(load_project_sources(directory))
   use ctx <- result.map(project_context(sources))
   list.map(names, fn(name) {
@@ -3818,6 +3823,7 @@ pub fn catalog_show(
 // diagnostic's output format is the kind of surface a 1.0 should not freeze.
 @internal
 pub fn run_coverage(directory: String) -> Result(String, GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use ctx <- result.map(load_project_context(directory))
   let rows = context_classification_checks(ctx)
   let ProjectContext(sources:, typed_path_dependencies:, ..) = ctx
@@ -4830,6 +4836,7 @@ fn compare_catalog_files(
 /// source of truth for hand-written `check`/`assume` lines and
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use cfg <- result.try(read_config(directory))
   use formatted <- result.try(format_one_spec(cfg.spec_file))
   case formatted {
@@ -4852,6 +4859,7 @@ pub fn run_format_stdin(input: String) -> Result(String, GradedError) {
 /// Check that the project's spec file is already formatted. Returns error
 /// with the file path if it isn't. Used by CI as `format --check`.
 pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
+  use Nil <- result.try(check_directory(directory))
   use cfg <- result.try(read_config(directory))
   use formatted <- result.try(format_one_spec(cfg.spec_file))
   case formatted {
@@ -5777,6 +5785,7 @@ fn infer_runs(
   // A package has one spec file, so a scoped `infer` is a whole-package `infer`:
   // a spec written from a subtree's modules alone would state the package's
   // public surface wrongly rather than partially.
+  use Nil <- result.try(check_directory(directory))
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
   use #(targets, shared) <- result.try(case named_targets(cfg) {
