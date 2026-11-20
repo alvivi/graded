@@ -225,6 +225,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of its own, no longer reads the current directory's package.
 - Run from the package root, `graded format` on a `src/` subtree formats the
   package's spec.
+- A directory argument that does not exist, or that the OS does not resolve,
+  is an error for every command. `graded check src/typo` reported "all checks
+  passed".
 
 ## [0.23.0] - 2026-11-12
 

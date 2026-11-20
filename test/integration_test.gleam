@@ -11218,6 +11218,53 @@ pub fn equivalent_spellings_of_a_scope_read_alike_test() {
   support.cleanup(root)
 }
 
+pub fn a_directory_the_os_does_not_read_is_an_error_test() {
+  // Regressions: each passed, or read `src` past a missing directory or file.
+  let root = "build/scoped_subtree_unread"
+  scoped_package(root)
+  let assert Ok(Nil) = simplifile.write(root <> "/file.txt", "")
+  ["/src/typo", "/missing/../src", "/file.txt/../src"]
+  |> list.each(fn(suffix) {
+    let d = root <> suffix
+    let effects = graded.run_effect_each(d, ["outside.go", "sub/inner.go"])
+    use read <- list.each([
+      unread(graded.run(d)),
+      unread(graded.check_project(d)),
+      graded.run_infer(d),
+      unread(graded.run_infer_dry_run(d)),
+      graded.run_infer_check(d),
+      unread(graded.run_infer_command(cli.Write, d)),
+      unread(graded.run_effect(d, "outside.go")),
+      unread(graded.run_effect_formatted(d, "outside.go", graded.Prose)),
+      unread(graded.run_why(d, "outside.go")),
+      unread(graded.run_why_each(d, ["outside.go"])),
+      unread(graded.run_coverage(d)),
+      graded.run_format(d),
+      graded.run_format_check(d),
+      ..list.map(effects, fn(entry) { unread(entry.1) })
+    ])
+    let assert Error(graded.DirectoryReadError(path, _)) = read
+    path |> should.equal(d)
+  })
+  support.cleanup(root)
+}
+
+fn unread(read: Result(a, e)) -> Result(Nil, e) {
+  result.replace(read, Nil)
+}
+
+pub fn a_directory_that_resolves_but_does_not_list_is_read_test() {
+  // A control: the directory is resolved, not listed.
+  let root = "build/scoped_subtree_unlisted"
+  scoped_package(root)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(root, 0o100)
+  let formatted = graded.run_format_check(root)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(root, 0o755)
+  let spec = root <> "/scoped.graded"
+  formatted |> should.equal(Error(graded.FormatCheckFailed([spec])))
+  support.cleanup(root)
+}
+
 pub fn a_scoped_query_answers_for_the_whole_package_test() {
   // `why` and `effect` are read-only lookups over the package's index, so they
   // answer for a module outside the scope rather than declining a name the
