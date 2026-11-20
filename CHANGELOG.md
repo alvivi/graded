@@ -215,6 +215,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A symbolic link leading back to one of its own parent directories is skipped,
   as the Gleam compiler skips it. graded no longer refuses a project holding
   one, or reads a dependency holding one as having no modules.
+- `graded check ../app/src/`, and any argument starting with `..` that ends in
+  or repeats a slash, report what `../app/src` reports; they passed over
+  violations.
+- Run from the package root, a folder outside `src/` that no nearer
+  `gleam.toml` encloses reads its own spec however it is spelled. An absolute
+  path read the package's spec, and `infer` wrote the folder's effects into it.
+- A `..` path to a folder outside the current directory, with no `gleam.toml`
+  of its own, no longer reads the current directory's package.
+- Run from the package root, `graded format` on a `src/` subtree formats the
+  package's spec.
 
 ## [0.23.0] - 2026-11-12
 

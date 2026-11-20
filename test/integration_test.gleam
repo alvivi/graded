@@ -11191,12 +11191,23 @@ pub fn equivalent_spellings_of_a_scope_read_alike_test() {
   let root = "build/scoped_subtree_spellings"
   scoped_package(root)
   let scoped = root <> "/src/sub"
+  let assert Ok(cwd) = simplifile.current_directory()
+  let above = "../" <> filepath.base_name(cwd) <> "/" <> scoped
 
   [scoped, scoped <> "/", scoped <> "//", "./" <> scoped, root <> "/src/./sub"]
+  |> list.map(fn(spelling) { #(spelling, scoped) })
+  // A regression: the trailing slash after a leading `..` matched no file.
+  // Then two controls: the same without it, and an absolute spelling with it.
+  |> list.append([
+    #(above <> "/", above),
+    #(above, above),
+    #(cwd <> "/" <> scoped <> "/", cwd <> "/" <> scoped),
+  ])
   |> list.each(fn(spelling) {
+    let #(spelling, reported) = spelling
     let assert Ok(results) = graded.check_project(spelling)
     let assert Ok(r) =
-      list.find(results, fn(r) { r.file == scoped <> "/inner.gleam" })
+      list.find(results, fn(r) { r.file == reported <> "/inner.gleam" })
     let assert [violation] = r.violations
     violation.function |> should.equal("go")
     violation.explanation.actual
@@ -11249,7 +11260,25 @@ pub fn a_non_package_subtree_keeps_acting_as_its_own_root_test() {
   // root, so its spec is read from inside it and its module paths are keyed from
   // inside it. Widening here would write the fixture's spec into the project
   // around it.
-  let root = "build/scoped_standalone/fixtures"
+  let root = standalone_fixture("build/scoped_standalone/fixtures")
+  let assert Ok(cwd) = simplifile.current_directory()
+  let above = "../" <> filepath.base_name(cwd) <> "/" <> root
+  reads_one(root, root <> "/app.gleam", "Time")
+  // Regressions: spelled absolutely, or leaving the cwd and re-entering it, the
+  // folder read the surrounding project's spec.
+  [#(cwd <> "/" <> root, cwd <> "/" <> root), #(above, above)]
+  |> list.append([#(above <> "/", above)])
+  // A regression: `/..` and a trailing slash left the absolute spelling raw.
+  |> list.append([#("/.." <> cwd <> "/" <> root <> "/", cwd <> "/" <> root)])
+  |> list.each(fn(case_) { reads_one(case_.0, case_.1 <> "/app.gleam", "Time") })
+  let assert Error(graded.StaleSpec(path:, ..)) =
+    graded.run_infer_check(cwd <> "/" <> root)
+  path |> should.equal(cwd <> "/" <> root <> "/fixtures.graded")
+  support.cleanup("build/scoped_standalone")
+}
+
+// A folder outside any package's `src/`, under graded's own manifest.
+fn standalone_fixture(root: String) -> String {
   support.write_fixture(root, [
     #("fixtures.graded", "check app.go : []\nassume ffi.now : [Time]\n"),
     #(
@@ -11261,14 +11290,35 @@ pub fn now() -> Nil
     ),
     #("app.gleam", "import ffi\n\npub fn go() -> Nil {\n  ffi.now()\n}\n"),
   ])
+}
 
-  let assert Ok(results) = graded.check_project(root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+// `check` from `spelling` reports one violation, in `file`, charging `effect`,
+// and no warning.
+fn reads_one(spelling: String, file: String, effect: String) -> Nil {
+  let assert Ok(results) = graded.check_project(spelling)
+  let assert Ok(r) = list.find(results, fn(r) { r.file == file })
   let assert [violation] = r.violations
   violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Time"])))
-  support.cleanup("build/scoped_standalone")
+  |> should.equal(types.Specific(set.from_list([effect])))
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+}
+
+pub fn a_climbing_spelling_with_a_trailing_slash_reads_a_loose_folder_test() {
+  // A regression: the trailing slash after a leading `..` matched no file and
+  // parsed the folder's `build/`. The clean spelling reads the same.
+  let root =
+    support.write_fixture("build/scoped_loose/loose", [
+      #("loose.graded", "assume z.loud : [Stdout]\ncheck z.main : []\n"),
+      #(
+        "z.gleam",
+        "@external(erlang, \"z\", \"loud\")\npub fn loud() -> Nil\npub fn main() { loud() }\n",
+      ),
+      #("build/generated.gleam", "pub fn broken(\n"),
+    ])
+  let assert Ok(cwd) = simplifile.current_directory()
+  let above = "../" <> filepath.base_name(cwd) <> "/" <> root
+  list.each([above <> "/", above], reads_one(_, above <> "/z.gleam", "Stdout"))
+  support.cleanup("build/scoped_loose")
 }
 
 // Per-function externals over ordinary project functions
