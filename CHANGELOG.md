@@ -106,6 +106,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned function is charged what is passed as `other`, where it was
   charged what is passed as `cb`. Such a variable is no longer flagged as
   naming no bound.
+- girard 4.0.2 or later in the 4.x series is required. Functions girard 3.0.0
+  could not type, such as one that pipes into `echo`, are now typed, so a field
+  call in one on a receiver only the type inference types reads the field's
+  effects instead of `[Unknown]`.
 
 ### Removed
 
@@ -237,6 +241,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - What a `let assert` message and a bit-array `size(…)` expression do is
   charged: `let assert [x] = xs as { echo "none" }` and
   `<<0:size({ echo n })>>` read `[Stderr]` where they read `[]`.
+- A module declaring a cyclic type alias, such as `type A = B` beside
+  `type B = A`, no longer makes graded hang.
 
 ## [0.23.0] - 2026-11-12
 

@@ -14754,6 +14754,54 @@ pub fn run() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_field_call_on_a_target_shorthand_result_reads_its_field_test() {
+  // The type inference types the call through the `erl` variant, so the field
+  // call reads the field's effects and the variant's own write still counts.
+  let root = "build/target_shorthand_field"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "assume proj.Runner.run : [Net]
+assume proj.write : [Stdout]
+check proj.run : [Net]
+",
+    ),
+    #(
+      "proj.gleam",
+      "pub type Runner {
+  Runner(run: fn() -> Nil)
+}
+
+@external(erlang, \"io\", \"put_chars\")
+pub fn write(text: String) -> Nil
+
+@target(js)
+fn make(value: Runner) -> Runner {
+  value
+}
+
+@target(erl)
+fn make(value: Runner) -> Runner {
+  write(\"x\")
+  value
+}
+
+pub fn run(value: Runner) -> Nil {
+  make(value).run()
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/target_shorthand_field/proj.gleam: run calls proj.write with effects [Stdout] (from your spec's `assume` line) but declared [Net]",
+  ])
+  support.cleanup(root)
+}
+
 pub fn an_update_builder_writing_a_fixed_sibling_is_weighed_test() {
   // The builder wires the checked field from its own parameter and writes a
   // sibling from a fixed value. A builder that routes every field it writes is
@@ -18610,6 +18658,47 @@ pub fn assert_then_minus(values: List(Int)) -> Int {
     "build/echo_size_and_message/proj.gleam: assert_then_minus echoes a value with effects [Stderr] but declared []",
     "build/echo_size_and_message/proj.gleam: assert_message echoes a value with effects [Stderr] but declared []",
     "build/echo_size_and_message/proj.gleam: size_expression echoes a value with effects [Stderr] but declared []",
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_field_call_after_a_piped_echo_reads_its_field_test() {
+  // The type inference types a function that pipes into `echo`, so a field
+  // call on a receiver only it types reads the field's effects beside the
+  // echo's write.
+  let root = "build/echo_piped_field"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "assume proj.Runner.run : []
+check proj.pure : []
+check proj.allowed : [Stderr]
+",
+    ),
+    #(
+      "proj.gleam",
+      "pub type Runner {
+  Runner(run: fn() -> Nil)
+}
+
+pub fn pure(pair: #(Runner, Int)) -> Nil {
+  let _ = pair.1 |> echo
+  pair.0.run()
+}
+
+pub fn allowed(pair: #(Runner, Int)) -> Nil {
+  let _ = pair.1 |> echo
+  pair.0.run()
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/echo_piped_field/proj.gleam: pure echoes a value with effects [Stderr] but declared []",
   ])
   support.cleanup(root)
 }
