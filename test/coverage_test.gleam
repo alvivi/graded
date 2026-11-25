@@ -26,7 +26,7 @@ import support
 
 const clean_report =
   "gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified)
-graded 0.20.0, girard 3.0.0 (verified), glance 7.0.0 (verified)
+graded 0.20.0, girard 4.0.2 (verified), glance 7.0.0 (verified)
 
 targets: erlang — gleam.toml declares none, so bodies are read on erlang and declarations on both
 type inference: ran on erlang; no @target function, so no second run
@@ -56,7 +56,7 @@ pub fn an_unverified_version_is_stated_and_noticed_test() {
       clean(),
       compat.Observed(
         graded: "0.20.0",
-        girard: Ok("3.0.0"),
+        girard: Ok("4.0.2"),
         glance: Ok("7.0.0"),
         otp: Ok("28.4.2"),
         gleam: Ok("30.19.8"),
@@ -107,12 +107,12 @@ pub fn a_manifest_pinning_another_girard_is_noticed_test() {
       ..clean(),
       versions: coverage.Versions(
         ..{ clean() }.versions,
-        manifest_girard: Some("3.1.0"),
+        manifest_girard: Some("4.1.0"),
       ),
     )
   coverage.render(report)
   |> string.contains(
-    "the project's manifest pins girard 3.1.0; the analyzer running is girard 3.0.0",
+    "the project's manifest pins girard 4.1.0; the analyzer running is girard 4.0.2",
   )
   |> should.be_true()
 }
@@ -123,7 +123,7 @@ pub fn a_manifest_naming_the_running_girard_is_not_noticed_test() {
       ..clean(),
       versions: coverage.Versions(
         ..{ clean() }.versions,
-        manifest_girard: Some("3.0.0"),
+        manifest_girard: Some("4.0.2"),
       ),
     )
   coverage.render(report)
@@ -608,7 +608,7 @@ fn clean() -> coverage.CoverageReport {
     versions: coverage.Versions(
       observed: compat.Observed(
         graded: "0.20.0",
-        girard: Ok("3.0.0"),
+        girard: Ok("4.0.2"),
         glance: Ok("7.0.0"),
         otp: Ok("28.4.2"),
         gleam: Ok("1.18.0"),

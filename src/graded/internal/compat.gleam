@@ -23,7 +23,7 @@ pub const verified_gleam = ["1.15.4", "1.16.0", "1.17.0", "1.18.0", "1.19.0"]
 pub const verified_otp = "28.4.2"
 
 // The girard the corpus was measured against, as `manifest.toml` pins it.
-pub const verified_girard = "3.0.0"
+pub const verified_girard = "4.0.2"
 
 // The glance the corpus was measured against, as `manifest.toml` pins it. It
 // parses every source graded reads, girard's included, so a bump moves what the

@@ -459,6 +459,7 @@ fn skipped_result(
       expressions: [],
       resolutions: [],
       dropped: [],
+      unavailable: [],
     ),
     skipped:,
   )

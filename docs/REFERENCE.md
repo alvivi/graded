@@ -1555,7 +1555,7 @@ worked example.
 ```
 $ gleam run -m graded coverage
 gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified)
-graded 0.20.0, girard 3.0.0 (verified), glance 7.0.0 (verified)
+graded 0.20.0, girard 4.0.2 (verified), glance 7.0.0 (verified)
 
 targets: erlang — gleam.toml declares none, so bodies are read on erlang and declarations on both
 type inference: ran on erlang; no @target function, so no second run
@@ -1597,7 +1597,7 @@ label in one function are two places you can open, and the wording is the same
 ### Supported versions
 
 graded is verified on Gleam **1.15.4, 1.16.0, 1.17.0, 1.18.0 and 1.19.0**, on
-Erlang/OTP **28.4.2**, with **girard 3.0.0** and **glance 7.0.0**. `gleam.toml`
+Erlang/OTP **28.4.2**, with **girard 4.0.2** and **glance 7.0.0**. `gleam.toml`
 requires `gleam >= 1.15.4`, the head of that list.
 
 A version enters the list only after all four gates were clean on it: graded

@@ -47,7 +47,7 @@ pub fn greet(name: String) -> Nil {
 ```
 $ gleam run -m graded coverage
 gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified)
-graded 0.20.0, girard 3.0.0 (verified), glance 7.0.0 (verified)
+graded 0.20.0, girard 4.0.2 (verified), glance 7.0.0 (verified)
 
 targets: erlang — gleam.toml declares none, so bodies are read on erlang and declarations on both
 type inference: ran on erlang; no @target function, so no second run
@@ -86,7 +86,7 @@ through:
 
 ```
 gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified)
-graded 0.20.0, girard 3.0.0 (verified), glance 7.0.0 (verified)
+graded 0.20.0, girard 4.0.2 (verified), glance 7.0.0 (verified)
 ```
 
 Each version carries its standing:
@@ -108,7 +108,7 @@ the report:
 ```
 versions
   gleam 1.20.0 is not a verified version (verified: 1.15.4, 1.16.0, 1.17.0, 1.18.0, 1.19.0)
-  the project's manifest pins girard 3.1.0; the analyzer running is girard 3.0.0
+  the project's manifest pins girard 4.1.0; the analyzer running is girard 4.0.2
 ```
 
 The second line is the checkout case: a build of graded pointed at a project
