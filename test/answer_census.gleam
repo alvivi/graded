@@ -162,6 +162,7 @@ pub fn shape(kind: checker.CallKind) -> String {
     checker.InlineFunctionCall -> "inline-function"
     checker.LetBoundValueCall -> "let-bound-value"
     checker.ComputedValueCall -> "computed-value"
+    checker.EchoCall -> "echo"
     checker.UnclassifiedCall -> "unclassified"
   }
 }

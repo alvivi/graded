@@ -2890,6 +2890,8 @@ const external_sentinel = "<external>"
 
 const declared_sentinel = "<declared>"
 
+const echo_sentinel = "<echo>"
+
 // The sentinel for a kind that carries no name of its own, and the placeholder
 // payloads of the kinds whose identity is the sentinel module alone.
 const unclassified_sentinel = "<call>"
@@ -2944,6 +2946,8 @@ pub type CallKind {
   LetBoundValueCall
   // An application of an opaque computed function value.
   ComputedValueCall
+  // An `echo`, which writes to standard error.
+  EchoCall
   // A synthetic call site this classifier doesn't recognise, or a recognised one
   // whose payload is malformed. Rendered generically, so a sentinel is never
   // shown as the call's identity.
@@ -2970,6 +2974,7 @@ fn sentinel_name(kind: CallKind) -> QualifiedName {
     InlineFunctionCall -> QualifiedName(pipe_sentinel, operator_payload)
     LetBoundValueCall -> QualifiedName(closure_sentinel, applied_payload)
     ComputedValueCall -> QualifiedName(apply_sentinel, unknown_payload)
+    EchoCall -> QualifiedName(echo_sentinel, "")
     UnclassifiedCall -> QualifiedName(unclassified_sentinel, "")
   }
 }
@@ -2988,6 +2993,7 @@ pub fn call_kind(call: QualifiedName) -> CallKind {
     module if module == declared_sentinel -> CallerDeclaration(call.function)
     module if module == pipe_sentinel -> InlineFunctionCall
     module if module == apply_sentinel -> ComputedValueCall
+    module if module == echo_sentinel -> EchoCall
     module if module == closure_sentinel -> LetBoundValueCall
     module if module == local_sentinel ->
       payload_kind(call.function, UnresolvedLocalCall)
@@ -3415,6 +3421,7 @@ fn plain_action(kind: CallKind) -> String {
     InlineFunctionCall -> "calls an inline function"
     LetBoundValueCall -> "calls a let-bound function value"
     ComputedValueCall -> "calls a computed function value"
+    EchoCall -> "echoes a value"
     UnclassifiedCall -> "calls an unclassified call site"
   }
 }
@@ -3519,6 +3526,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
     | InlineFunctionCall
     | LetBoundValueCall
     | ComputedValueCall
+    | EchoCall
     | UnclassifiedCall -> ""
   }
 }
@@ -6870,6 +6878,14 @@ fn collect_view_effects(
       plain_call(sentinel_call(ComputedValueCall, span), effect_term.unknown())
     })
 
+  let echo_effects =
+    list.map(result.echoes, fn(span) {
+      plain_call(
+        sentinel_call(EchoCall, span),
+        effect_term.from_effect_set(types.Specific(set.from_list(["Stderr"]))),
+      )
+    })
+
   // Direct applications of a let-bound closure, or of the closure option of a
   // let-bound `case` of functions: `let h = fn(x) { ... }; h(a)`. The closure
   // body is already walked at its `let` binding site with the lexical
@@ -6922,6 +6938,7 @@ fn collect_view_effects(
       direct_op_effects,
       direct_pipe_effects,
       unknown_app_effects,
+      echo_effects,
       direct_closure_effects,
     ]),
     memo,

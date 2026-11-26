@@ -1116,6 +1116,8 @@ pub type ExtractResult {
     // (`funcs.0(x)`): applying it could do anything, so each collapses to
     // [Unknown] rather than being silently dropped as pure.
     unknown_apps: List(glance.Span),
+    // Spans of the `echo` expressions, each a write to standard error.
+    echoes: List(glance.Span),
     call_args: Dict(#(Int, Int), List(CallArgument)),
     // Every custom-type value the walked body constructs, direct constructions
     // and record updates alike. A field `check` weighs the values a package
@@ -2806,9 +2808,10 @@ fn extract_from_expression(
         ),
       )
 
-    // Echo: walk the echoed value and the optional `as` message.
-    glance.Echo(expression:, message:, ..) ->
-      empty()
+    // Echo: a write to standard error, then the echoed value and the optional
+    // `as` message.
+    glance.Echo(location:, expression:, message:) ->
+      ExtractResult(..empty(), echoes: [location])
       |> merge_optional(expression, context, env)
       |> merge_optional(message, context, env)
 
@@ -5164,6 +5167,7 @@ fn empty() -> ExtractResult {
     direct_pipe_ops: [],
     direct_closure_ops: [],
     unknown_apps: [],
+    echoes: [],
     call_args: dict.new(),
     constructions: [],
     ambiguous: [],
@@ -5182,6 +5186,7 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
       right.direct_closure_ops,
     ),
     unknown_apps: list.append(left.unknown_apps, right.unknown_apps),
+    echoes: list.append(left.echoes, right.echoes),
     call_args: dict.merge(left.call_args, right.call_args),
     constructions: list.append(left.constructions, right.constructions),
     ambiguous: list.append(left.ambiguous, right.ambiguous),
