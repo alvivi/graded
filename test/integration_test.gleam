@@ -14802,6 +14802,392 @@ pub fn run(value: Runner) -> Nil {
   support.cleanup(root)
 }
 
+// Imports `@target` keeps to one target
+//
+// Two imports binding one name, each kept to its own target, bind it on that
+// target alone. `louder.emit` writes and `quieter.emit` does not.
+
+pub fn a_gated_import_binds_its_name_on_its_own_target_test() {
+  // An Erlang package reads the Erlang import, whichever is written first.
+  let javascript_first =
+    "@target(javascript)
+import quieter as chosen
+
+@target(erlang)
+import louder as chosen
+
+pub fn main() -> Nil {
+  chosen.emit()
+}
+"
+  let erlang_first =
+    "@target(erlang)
+import louder as chosen
+
+@target(javascript)
+import quieter as chosen
+
+pub fn main() -> Nil {
+  chosen.emit()
+}
+"
+  gated_import_violations("target = \"erlang\"\n", javascript_first)
+  |> should.equal([
+    "build/gated_import/proj.gleam: main calls louder.emit with effects [Stdout] (from in-memory inference) but declared []",
+  ])
+  gated_import_violations("target = \"erlang\"\n", erlang_first)
+  |> should.equal([
+    "build/gated_import/proj.gleam: main calls louder.emit with effects [Stdout] (from in-memory inference) but declared []",
+  ])
+  // A JavaScript package reads the JavaScript import.
+  gated_import_violations("target = \"javascript\"\n", erlang_first)
+  |> should.equal([])
+}
+
+pub fn a_gated_import_is_read_on_each_target_a_package_names_test() {
+  let source =
+    "@target(erlang)
+import quieter as chosen
+
+@target(javascript)
+import louder as chosen
+
+pub fn main() -> Nil {
+  chosen.emit()
+}
+"
+  gated_import_violations(
+    "[tools.graded]\ntargets = [\"erlang\", \"javascript\"]\n",
+    source,
+  )
+  |> should.equal([
+    "build/gated_import/proj.gleam: main calls louder.emit with effects [Stdout] (from in-memory inference) but declared [] (on javascript)",
+  ])
+}
+
+pub fn a_gated_unqualified_import_binds_its_name_on_its_own_target_test() {
+  gated_import_violations(
+    "target = \"erlang\"\n",
+    "@target(javascript)
+import quieter.{emit}
+
+@target(erlang)
+import louder.{emit}
+
+pub fn main() -> Nil {
+  emit()
+}
+",
+  )
+  |> should.equal([
+    "build/gated_import/proj.gleam: main calls louder.emit with effects [Stdout] (from in-memory inference) but declared []",
+  ])
+}
+
+pub fn a_package_naming_no_target_reads_its_erlang_import_test() {
+  // The target its bodies are read on.
+  gated_import_violations(
+    "",
+    "@target(erlang)
+import louder as chosen
+
+@target(javascript)
+import quieter as chosen
+
+pub fn main() -> Nil {
+  chosen.emit()
+}
+",
+  )
+  |> should.equal([
+    "build/gated_import/proj.gleam: main calls louder.emit with effects [Stdout] (from in-memory inference) but declared []",
+  ])
+}
+
+pub fn a_body_kept_to_javascript_reads_the_javascript_import_test() {
+  // A package naming no target reads its other bodies on Erlang, and this one
+  // on the target it is built for.
+  gated_import_violations(
+    "",
+    "@target(javascript)
+import louder as chosen
+
+@target(erlang)
+import quieter as chosen
+
+@target(javascript)
+pub fn main() -> Nil {
+  chosen.emit()
+}
+",
+  )
+  |> should.equal([
+    "build/gated_import/proj.gleam: main calls louder.emit with effects [Stdout] (from in-memory inference) but declared []",
+  ])
+}
+
+pub fn a_contract_reads_its_types_through_the_import_its_target_builds_test() {
+  // On JavaScript `Handler` is a function type, so a bound on a `Handler`
+  // parameter is a callback's, qualified or not.
+  let root = "build/gated_import_contract"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"javascript\"\n"),
+    #(
+      "proj.graded",
+      "assume proj.write : [Stdout]
+assume proj.qualified(handler: [e]) : [e]
+assume proj.unqualified(handler: [e]) : [e]
+check proj.main : [Stdout]
+",
+    ),
+    #("action_js.gleam", "pub type Handler =\n  fn() -> Nil\n"),
+    #("action_erl.gleam", "pub type Handler =\n  Int\n"),
+    #(
+      "proj.gleam",
+      "@target(javascript)
+import action_js.{type Handler} as chosen
+
+@target(erlang)
+import action_erl.{type Handler} as chosen
+
+@external(javascript, \"./ffi.mjs\", \"write\")
+pub fn write(text: String) -> Nil
+
+@external(javascript, \"./ffi.mjs\", \"run\")
+pub fn qualified(handler: chosen.Handler) -> Nil
+
+@external(javascript, \"./ffi.mjs\", \"run\")
+pub fn unqualified(handler: Handler) -> Nil
+
+pub fn main() -> Nil {
+  qualified(fn() { write(\"q\") })
+  unqualified(fn() { write(\"u\") })
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_reference_a_javascript_body_returns_reads_its_import_test() {
+  gated_package_violations([
+    #("proj.graded", "check proj.make : [] where returns : []\n"),
+    #("loud.gleam", "pub fn emit() -> Nil {\n  echo \"loud\"\n  Nil\n}\n"),
+    #("calm.gleam", "pub fn emit() -> Nil {\n  Nil\n}\n"),
+    #(
+      "proj.gleam",
+      "@target(erlang)
+import calm as chosen
+
+@target(javascript)
+import loud as chosen
+
+@target(javascript)
+pub fn make() -> fn() -> Nil {
+  chosen.emit
+}
+",
+    ),
+  ])
+  |> should.equal([
+    "build/gated_package/proj.gleam: make returns the operator [Stderr] but its `where returns` clause declares []",
+  ])
+}
+
+pub fn a_javascript_factory_routes_through_its_own_constructor_test() {
+  // The two constructors take their fields in opposite orders, so the factory's
+  // second argument reaches `run` only through the JavaScript one.
+  gated_package_violations([
+    #("proj.graded", "check proj.main : []\n"),
+    #(
+      "js_box.gleam",
+      "pub type Box {\n  Box(idle: fn() -> Nil, run: fn() -> Nil)\n}\n",
+    ),
+    #(
+      "erl_box.gleam",
+      "pub type Box {\n  Box(run: fn() -> Nil, idle: fn() -> Nil)\n}\n",
+    ),
+    #(
+      "proj.gleam",
+      "@target(erlang)
+import erl_box as chosen
+
+@target(javascript)
+import js_box as chosen
+
+@target(javascript)
+fn make(first: fn() -> Nil, second: fn() -> Nil) -> chosen.Box {
+  chosen.Box(first, second)
+}
+
+fn loud() -> Nil {
+  echo \"loud\"
+  Nil
+}
+
+@target(javascript)
+pub fn main() -> Nil {
+  let box = make(fn() { Nil }, loud)
+  box.run()
+}
+",
+    ),
+  ])
+  |> should.equal([
+    "build/gated_package/proj.gleam: main echoes a value with effects [Stderr] but declared []",
+  ])
+}
+
+pub fn a_javascript_type_reads_its_fields_through_its_import_test() {
+  // On JavaScript `Envelope` holds a callback, which the external may run.
+  gated_package_violations([
+    #("proj.graded", "assume proj.consume : []\ncheck proj.main : []\n"),
+    #("action_js.gleam", "pub type Handler =\n  fn() -> Nil\n"),
+    #("action_erl.gleam", "pub type Handler =\n  Int\n"),
+    #(
+      "proj.gleam",
+      "@target(erlang)
+import action_erl as chosen
+
+@target(javascript)
+import action_js as chosen
+
+@target(javascript)
+pub type Envelope {
+  Envelope(callback: chosen.Handler)
+}
+
+@target(javascript)
+@external(javascript, \"./ffi.mjs\", \"consume\")
+pub fn consume(value: Envelope) -> Nil
+
+fn loud() -> Nil {
+  echo \"loud\"
+  Nil
+}
+
+@target(javascript)
+pub fn main() -> Nil {
+  consume(Envelope(loud))
+}
+",
+    ),
+  ])
+  |> should.equal([
+    "build/gated_package/proj.gleam: main passes a record to `proj.consume`, which may run it, with effects [Stderr] but declared []",
+  ])
+}
+
+pub fn a_record_a_javascript_body_returns_carries_its_import_test() {
+  gated_package_violations([
+    #(
+      "proj.graded",
+      "check consumer.direct : []
+check consumer.bound : []
+check producer.local : []
+",
+    ),
+    #("loud.gleam", "pub fn emit() -> Nil {\n  echo \"loud\"\n  Nil\n}\n"),
+    #("calm.gleam", "pub fn emit() -> Nil {\n  Nil\n}\n"),
+    #(
+      "producer.gleam",
+      "@target(erlang)
+import calm as chosen
+
+@target(javascript)
+import loud as chosen
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+@target(javascript)
+pub fn make() -> Handler {
+  Handler(chosen.emit)
+}
+
+@target(javascript)
+pub fn make_bound() -> Handler {
+  let handler = Handler(chosen.emit)
+  handler
+}
+
+@target(javascript)
+pub fn local() -> Nil {
+  let handler = make()
+  handler.run()
+}
+",
+    ),
+    #(
+      "consumer.gleam",
+      "@target(javascript)
+import producer
+
+@target(javascript)
+pub fn direct() -> Nil {
+  let handler = producer.make()
+  handler.run()
+}
+
+@target(javascript)
+pub fn bound() -> Nil {
+  let handler = producer.make_bound()
+  handler.run()
+}
+",
+    ),
+  ])
+  |> list.sort(string.compare)
+  |> should.equal([
+    "build/gated_package/consumer.gleam: bound calls field `run` on `handler` with effects [Stderr] (from in-memory inference) but declared []",
+    "build/gated_package/consumer.gleam: direct calls field `run` on `handler` with effects [Stderr] (from in-memory inference) but declared []",
+    "build/gated_package/producer.gleam: local calls field `run` on `handler` with effects [Stderr] (from in-memory inference) but declared []",
+  ])
+}
+
+// The violations in a package naming no target made of `files`.
+fn gated_package_violations(files: List(#(String, String))) -> List(String) {
+  let root = "build/gated_package"
+  support.write_fixture(root, [#("gleam.toml", "name = \"proj\"\n"), ..files])
+  let assert Ok(reports) = graded.run(root)
+  let violations = list.flat_map(reports, fn(r) { r.violations })
+  support.cleanup(root)
+  violations
+}
+
+// The violations of `check proj.main : []` in a package whose `gleam.toml`
+// adds `targets` and whose `proj` module is `source`, beside `louder` and
+// `quieter`.
+fn gated_import_violations(targets: String, source: String) -> List(String) {
+  let root = "build/gated_import"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n" <> targets),
+    #("proj.graded", "assume louder.write : [Stdout]\ncheck proj.main : []\n"),
+    #(
+      "louder.gleam",
+      "@external(erlang, \"io\", \"put_chars\")
+@external(javascript, \"./ffi.mjs\", \"write\")
+pub fn write(text: String) -> Nil
+
+pub fn emit() -> Nil {
+  write(\"x\")
+}
+",
+    ),
+    #("quieter.gleam", "pub fn emit() -> Nil {\n  Nil\n}\n"),
+    #("proj.gleam", source),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  let violations = list.flat_map(reports, fn(r) { r.violations })
+  support.cleanup(root)
+  violations
+}
+
 pub fn an_update_builder_writing_a_fixed_sibling_is_weighed_test() {
   // The builder wires the checked field from its own parameter and writes a
   // sibling from a fixed value. A builder that routes every field it writes is

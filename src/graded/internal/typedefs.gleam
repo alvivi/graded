@@ -132,14 +132,30 @@ pub fn from_module(
   module: glance.Module,
   targets: Set(String),
 ) -> TypeRegistry {
-  let ModuleScope(scope) = module_scope(module_path, module)
+  // A type written through a name the module's imports bind once per target is
+  // read through the import built on the targets its definition is built on.
+  let scope_on = case extract.binds_an_import_name_per_target(module) {
+    False -> {
+      let ModuleScope(scope) = module_scope_on(module_path, module, targets)
+      fn(_definition_targets) { scope }
+    }
+    True -> fn(definition_targets) {
+      let ModuleScope(scope) =
+        module_scope_on(module_path, module, definition_targets)
+      scope
+    }
+  }
   let customs =
     module.custom_types
     |> list.filter(fn(definition) { compiled(definition, targets) })
     |> list.map(fn(definition) {
       let glance.CustomType(name:, parameters:, variants:, ..) =
         definition.definition
-      let scope = Scope(..scope, parameters: set.from_list(parameters))
+      let scope =
+        Scope(
+          ..scope_on(extract.compiled_targets(definition, targets)),
+          parameters: set.from_list(parameters),
+        )
       let definition = case variants {
         [] -> ExternalDefinition(parameters:)
         variants ->
@@ -160,7 +176,11 @@ pub fn from_module(
     |> list.map(fn(definition) {
       let glance.TypeAlias(name:, parameters:, aliased:, ..) =
         definition.definition
-      let scope = Scope(..scope, parameters: set.from_list(parameters))
+      let scope =
+        Scope(
+          ..scope_on(extract.compiled_targets(definition, targets)),
+          parameters: set.from_list(parameters),
+        )
       #(
         #(module_path, name),
         AliasDefinition(parameters:, aliased: resolve(aliased, scope)),
@@ -185,7 +205,27 @@ pub opaque type ModuleScope {
 }
 
 pub fn module_scope(module_path: String, module: glance.Module) -> ModuleScope {
-  let context = extract.build_import_context(module)
+  scope_in(module_path, module, extract.build_import_context(module))
+}
+
+// `module_scope` read on `targets`.
+pub fn module_scope_on(
+  module_path: String,
+  module: glance.Module,
+  targets: Set(String),
+) -> ModuleScope {
+  scope_in(
+    module_path,
+    module,
+    extract.build_import_context_on(module, targets),
+  )
+}
+
+fn scope_in(
+  module_path: String,
+  module: glance.Module,
+  context: extract.ImportContext,
+) -> ModuleScope {
   let local =
     list.append(
       list.map(module.custom_types, fn(definition) {

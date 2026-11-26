@@ -243,6 +243,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<<0:size({ echo n })>>` read `[Stderr]` where they read `[]`.
 - A module declaring a cyclic type alias, such as `type A = B` beside
   `type B = A`, no longer makes graded hang.
+- Two imports binding one name, each kept to its own target with `@target`,
+  bind it on their own targets. With `@target(erlang) import louder as chosen`
+  beside `@target(javascript) import quieter as chosen`, `chosen.emit()` in an
+  Erlang package reads `louder.emit`'s `[Stdout]`, where it could read
+  `quieter.emit`'s `[]`. A package naming both targets is read on each, and one
+  naming neither reads the Erlang import, save in a body `@target` keeps to
+  JavaScript.
 
 ## [0.23.0] - 2026-11-12
 

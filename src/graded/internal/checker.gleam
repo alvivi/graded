@@ -358,12 +358,19 @@ fn infer_definition(
 }
 
 // A definition's return-value provenance as other modules read it, where it
-// traces one. Opaque provenance is dropped: a lookup miss is treated as opaque
+// traces one, read through the imports built on the targets that build its
+// body. Opaque provenance is dropped: a lookup miss is treated as opaque
 // anyway.
 fn definition_provenance(
   definition: Definition(Function),
   context: ImportContext,
 ) -> Result(types.ReturnProvenance, Nil) {
+  let context =
+    definition_imports(
+      context,
+      definition,
+      types.declaration_targets(context.package_targets),
+    )
   case extract.return_provenance(definition.definition, context) {
     types.Opaque -> Error(Nil)
     traced -> Ok(extract.exported_provenance(traced, context))
@@ -1496,7 +1503,11 @@ fn explain_definition(
         classifications: classify_definition(
           variant.definition,
           module_path,
-          context,
+          definition_imports(
+            context,
+            variant,
+            types.declaration_targets(context.package_targets),
+          ),
           reading,
         ),
       )
@@ -2257,11 +2268,9 @@ fn separate_targets(
   }
 }
 
-// Whether a module defines some name more than once, each definition kept on a
-// target by `@target`.
-// Whether anything `module` defines depends on the target it is read on: a
-// definition `@target` keeps to some targets, or a function whose `@external`s
-// leave out a target.
+// Whether anything `module` defines or imports depends on the target it is read
+// on: a definition `@target` keeps to some targets, a function whose
+// `@external`s leave out a target, or a name its imports bind once per target.
 pub fn reads_targets(module: Module) -> Bool {
   list.any(module.functions, fn(definition) {
     extract.gated(definition) || extract.partly_external(definition)
@@ -2269,6 +2278,7 @@ pub fn reads_targets(module: Module) -> Bool {
   || list.any(module.constants, extract.gated)
   || list.any(module.type_aliases, extract.gated)
   || list.any(module.custom_types, extract.gated)
+  || extract.binds_an_import_name_per_target(module)
 }
 
 // Whether `module` defines a public function once per target.
@@ -2296,6 +2306,8 @@ pub fn defines_public_function_per_target(module: Module) -> Bool {
   })
 }
 
+// Whether a module defines or imports some name more than once, each binding
+// kept on a target by `@target`.
 pub fn defines_per_target(module: Module) -> Bool {
   let repeated = fn(names: List(String)) {
     list.length(names) != set.size(set.from_list(names))
@@ -2311,6 +2323,7 @@ pub fn defines_per_target(module: Module) -> Bool {
     list.map(module.type_aliases, fn(definition) { definition.definition.name }),
     list.map(module.custom_types, fn(definition) { definition.definition.name }),
   ))
+  || extract.binds_an_import_name_per_target(module)
 }
 
 // Summarize each of `targets`, which either selector above chose from
@@ -3980,6 +3993,28 @@ fn walk_body(
   walk(knowledge_base, memo)
 }
 
+// `context` with the names its module's imports bind once per target bound for
+// the targets `knowledge_base` walks a body on.
+fn body_imports(
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+) -> ImportContext {
+  case knowledge_base.active_targets {
+    Some(targets) -> extract.imports_on(context, targets)
+    None -> context
+  }
+}
+
+// `context` with the names its module's imports bind once per target bound for
+// the targets of `targets` that build `definition`'s body.
+fn definition_imports(
+  context: ImportContext,
+  definition: Definition(Function),
+  targets: Set(String),
+) -> ImportContext {
+  extract.imports_on(context, body_targets(definition, targets))
+}
+
 // The knowledge base a definition's own body is walked against, narrowed to the
 // targets that body runs on.
 //
@@ -5204,6 +5239,7 @@ fn function_field_sites(
   cache: LocalCache,
   memo: Memo,
 ) -> #(FieldSiteReport, Memo) {
+  let context = body_imports(context, knowledge_base)
   let extracted = extract.extract_function_calls(function, context)
   let parameters = frame_lexicon(function, FunctionFrame)
   let weigh = fn(state: #(FieldSiteReport, Memo), wired: WiredField) {
@@ -6506,6 +6542,7 @@ fn collect_view_effects(
   // Threaded memo state, extended as memoizable sub-analyses are computed.
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
+  let context = body_imports(context, knowledge_base)
   let result = case frame {
     FunctionFrame -> extract.extract_function_calls(function, context)
     ClosureFrame(params:, captures:, ..) ->
@@ -8886,22 +8923,25 @@ fn callee_provenance(
   knowledge_base: KnowledgeBase,
 ) -> Result(types.ReturnProvenance, Nil) {
   case callee.module {
-    "" ->
+    "" -> {
       // A fallback body describes neither what the foreign implementation
       // returns nor how, so a same-module consumer of one is charged `[Unknown]`
       // exactly as a cross-module consumer is: this channel reads no
       // declaration, so a foreign definition and no definition end alike here.
-      case
-        local_definition(
-          function_map,
-          callee.function,
-          walk_targets(context, knowledge_base),
-        )
-      {
+      let targets = walk_targets(context, knowledge_base)
+      case local_definition(function_map, callee.function, targets) {
         NativeDefinition(definition) ->
-          Ok(extract.return_provenance(definition.definition, context))
+          Ok(extract.return_provenance(
+            definition.definition,
+            definition_imports(
+              context,
+              definition,
+              types.declaration_targets(targets),
+            ),
+          ))
         ForeignDefinition | NoLocalDefinition -> Error(Nil)
       }
+    }
     _ -> effects.lookup_provenance(knowledge_base, callee)
   }
 }
@@ -10011,6 +10051,7 @@ fn compute_view_returned_operator(
   cache: LocalCache,
   memo: Memo,
 ) -> #(Result(EffectTerm, ReturnedOperatorReason), Memo) {
+  let context = body_imports(context, knowledge_base)
   // Gate on the return type being *a function* (so there's something to record
   // when called), not specifically operator-shaped — a first-order returned
   // function (`fn make() -> fn() -> Nil`) carries a latent effect too. The
@@ -13014,7 +13055,16 @@ pub fn classify_module(
   let context =
     module_import_context(module, module_path, knowledge_base, package_targets)
   list.flat_map(module.functions, fn(definition) {
-    classify_definition(definition.definition, module_path, context, reading)
+    classify_definition(
+      definition.definition,
+      module_path,
+      definition_imports(
+        context,
+        definition,
+        types.declaration_targets(package_targets),
+      ),
+      reading,
+    )
   })
 }
 

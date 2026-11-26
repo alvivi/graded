@@ -1584,8 +1584,9 @@ fn project_context(
 // The targets a run analyses its package on one at a time, each as a run built
 // for that target alone would, beside what those runs share. Every target the
 // package names, where it names more than one and the package or a local
-// package in its tree defines a name once per target, or a dependency it reads
-// defines a public function once per target; none otherwise.
+// package in its tree defines or imports a name once per target, or a
+// dependency it reads defines a public function or imports a name once per
+// target; none otherwise.
 fn target_split(
   directory: String,
   cfg: config.GradedConfig,
@@ -1612,6 +1613,7 @@ fn target_split(
             True -> checker.defines_per_target(module)
             False ->
               checker.defines_public_function_per_target(module)
+              || extract.binds_an_import_name_per_target(module)
               || defines_function_capable_type_per_target(path, module, named)
           }
         #(_path, Error(Nil)) -> False
@@ -5084,7 +5086,7 @@ fn built_registry(
   module: glance.Module,
   package_targets: types.PackageTargets,
 ) -> SignatureRegistry {
-  signatures.from_glance_module(
+  signatures.from_glance_module_on(
     module_path,
     glance.Module(
       ..module,
@@ -5093,6 +5095,7 @@ fn built_registry(
         types.declaration_targets(package_targets),
       ),
     ),
+    types.declaration_targets(package_targets),
   )
 }
 
@@ -5443,6 +5446,7 @@ fn run_targets(
         || list.any(paired_type_names(module, read_any, read_any), fn(pair) {
           pair.0 == other_name
         })
+        || extract.binds_an_import_name_per_target(module)
       })
     }
   case function_gated || pair_gated {
@@ -8245,8 +8249,13 @@ fn source_dir_sources(
 //
 // A name kept on one target and defined nowhere else is read only from code
 // kept on that target too. An opaque type's fields are no part of what another
-// module reads.
+// module reads. A name the module's imports bind once per target counts for
+// both targets.
 fn interface_target_variants(module: glance.Module) -> Set(String) {
+  use <- bool.guard(
+    when: extract.binds_an_import_name_per_target(module),
+    return: types.every_target(),
+  )
   use <- bool.guard(
     when: !list.any(module.functions, gated)
       && !list.any(module.constants, gated)

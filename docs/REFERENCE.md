@@ -1083,13 +1083,24 @@ a `gleam build --target javascript` against such a package is invisible to it:
 
 Declaring `[tools.graded].targets` replaces both readings with what you wrote.
 
+Two imports may bind one name when `@target` keeps them to different targets.
+With `@target(erlang) import louder as chosen` beside
+`@target(javascript) import quieter as chosen`, `chosen.emit()` calls
+`louder.emit` on Erlang and `quieter.emit` on JavaScript; a package naming both
+targets is read on each, and one naming neither reads the Erlang import, save in
+a body `@target` keeps to JavaScript.
+
 The type inference follows a `@target` attribute to its own target rather than to
 the package's. It runs once per target some function in your source is gated to —
 `gleam.toml`'s reading picks the first — and each definition is typed on the run
 that builds it, so a call inside a `@target(javascript)` function of an
-Erlang-target package is read as precisely as one outside it. A package with no
-gated function runs the inference once and pays nothing for the shape.
-`graded coverage` states which targets it ran on and why.
+Erlang-target package is read as precisely as one outside it. A package read on
+both targets also runs it on both where a constant, type alias or custom type of
+its own, or a definition a dependency it imports exposes, is defined once per
+target, or where two imports bind one name, each kept to its own target. A
+package with none of these runs the inference once and pays nothing for the
+shape. `graded coverage` states which targets it ran on and
+why.
 
 That body is weighed *on the targets it runs on*. A name it calls is reached from
 those targets and no others, so a fallback running on Erlang that calls another
