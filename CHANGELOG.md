@@ -228,6 +228,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A directory argument that does not exist, or that the OS does not resolve,
   is an error for every command. `graded check src/typo` reported "all checks
   passed".
+- A function defined once per target with the deprecated `@target(erl)` and
+  `@target(js)` is read on the targets they name. In an Erlang package,
+  `make()` whose `@target(erl)` variant prints reads `[Stdout]`, where it could
+  read the `@target(js)` variant's `[]`.
 
 ## [0.23.0] - 2026-11-12
 

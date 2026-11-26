@@ -14716,6 +14716,44 @@ pub fn direct() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_target_shorthand_selects_the_variant_its_target_builds_test() {
+  // `@target(js)` and `@target(erl)` are the deprecated spellings of the two
+  // targets. In an Erlang package the call reaches the `erl` variant, whichever
+  // is written first.
+  let root = "build/target_shorthand"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #("proj.graded", "assume proj.write : [Stdout]\ncheck proj.run : []\n"),
+    #(
+      "proj.gleam",
+      "@external(erlang, \"io\", \"put_chars\")
+pub fn write(text: String) -> Nil
+
+@target(js)
+fn make() -> Nil {
+  Nil
+}
+
+@target(erl)
+fn make() -> Nil {
+  write(\"x\")
+}
+
+pub fn run() -> Nil {
+  make()
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/target_shorthand/proj.gleam: run calls proj.write with effects [Stdout] (from your spec's `assume` line) but declared []",
+  ])
+  support.cleanup(root)
+}
+
 pub fn an_update_builder_writing_a_fixed_sibling_is_weighed_test() {
   // The builder wires the checked field from its own parameter and writes a
   // sibling from a fixed value. A builder that routes every field it writes is

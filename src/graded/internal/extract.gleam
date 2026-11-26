@@ -627,7 +627,6 @@ pub fn declared_targets(
   attribute_targets(definition, "external") |> set.from_list()
 }
 
-// The target named by the first argument of each `name` attribute.
 // Whether `definition` carries a `@target` attribute.
 pub fn gated(definition: glance.Definition(a)) -> Bool {
   list.any(definition.attributes, fn(attribute) { attribute.name == "target" })
@@ -642,12 +641,17 @@ pub fn partly_external(definition: glance.Definition(glance.Function)) -> Bool {
   }
 }
 
+// The target named by the first argument of each `name` attribute, with the
+// deprecated `@target` spellings `erl` and `js` read as `erlang` and
+// `javascript`.
 fn attribute_targets(
   definition: glance.Definition(a),
   name: String,
 ) -> List(String) {
   use attribute <- list.filter_map(definition.attributes)
   case attribute.name == name, attribute.arguments {
+    True, [glance.Variable(name: "erl", ..), ..] -> Ok("erlang")
+    True, [glance.Variable(name: "js", ..), ..] -> Ok("javascript")
     True, [glance.Variable(name: target, ..), ..] -> Ok(target)
     True, _ | False, _ -> Error(Nil)
   }
