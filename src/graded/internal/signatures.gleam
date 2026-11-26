@@ -20,6 +20,7 @@ import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded/internal/config
+import graded/internal/extract
 import graded/internal/typedefs
 import graded/internal/types.{type QualifiedName, QualifiedName}
 import simplifile
@@ -392,12 +393,39 @@ pub fn from_glance_module(
   module_path: String,
   module: Module,
 ) -> SignatureRegistry {
+  from_glance_module_on(module_path, module, types.every_target())
+}
+
+// `from_glance_module` for a module read on `targets`: a type written through a
+// name its imports bind once per target is read through the import built on the
+// targets the function is built on.
+pub fn from_glance_module_on(
+  module_path: String,
+  module: Module,
+  targets: Set(String),
+) -> SignatureRegistry {
   let alias_map = type_alias_map(module.type_aliases)
-  let scope = typedefs.module_scope(module_path, module)
+  let scope = case extract.binds_an_import_name_per_target(module) {
+    False -> {
+      let scope = typedefs.module_scope_on(module_path, module, targets)
+      fn(_definition) { scope }
+    }
+    True -> fn(definition) {
+      typedefs.module_scope_on(
+        module_path,
+        module,
+        extract.compiled_targets(definition, targets),
+      )
+    }
+  }
   let signatures =
     list.fold(module.functions, dict.new(), fn(acc, definition) {
       let parameters =
-        parameter_infos(definition.definition, alias_map, Some(scope))
+        parameter_infos(
+          definition.definition,
+          alias_map,
+          Some(scope(definition)),
+        )
       dict.upsert(
         acc,
         QualifiedName(module: module_path, function: definition.definition.name),

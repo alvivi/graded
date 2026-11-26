@@ -347,6 +347,41 @@ fn target(resolver) { Options(label: \"\", resolver: resolver) }",
   |> should.equal(Build(dict.from_list([#("resolver", FieldParam(0))])))
 }
 
+// Imports kept to one target
+//
+// Two imports binding one name to different modules or items, each kept to its
+// own target, make a module read once per target. Two imports of one module,
+// each bringing in different items, bind its name to one module.
+
+pub fn imports_of_two_modules_under_one_name_bind_it_per_target_test() {
+  let assert Ok(module) =
+    glance.module(
+      "@target(erlang)
+import louder as chosen
+
+@target(javascript)
+import quieter as chosen
+",
+    )
+  extract.binds_an_import_name_per_target(module) |> should.be_true()
+}
+
+pub fn imports_of_one_module_on_each_target_bind_its_name_once_test() {
+  let assert Ok(module) =
+    glance.module(
+      "@target(javascript)
+import gleam/erlang/process.{type Selector}
+
+@target(erlang)
+import gleam/erlang/process.{type Selector, type Subject}
+",
+    )
+  extract.binds_an_import_name_per_target(module) |> should.be_false()
+  let context = extract.build_import_context(module)
+  dict.get(context.aliases, "process")
+  |> should.equal(Ok("gleam/erlang/process"))
+}
+
 // Call extraction
 //
 // `extract_calls` walks a function body and sorts every call it finds into the

@@ -227,7 +227,18 @@ pub type ImportContext {
     // only one of the two readings answers. Every target until a caller narrows
     // it.
     package_targets: types.PackageTargets,
+    // Every binding of a name the module's imports bind once per target, each
+    // beside the targets its import is built on. `imports_on` chooses among
+    // them for the targets a body is read on.
+    gated: List(GatedBinding),
   )
+}
+
+// One binding of a name a module's imports bind once per target.
+pub type GatedBinding {
+  GatedModule(name: String, path: String, targets: Set(String))
+  GatedValue(name: String, item: QualifiedName, targets: Set(String))
+  GatedType(name: String, item: QualifiedName, targets: Set(String))
 }
 
 // Record which targets the package under analysis is compiled for.
@@ -310,43 +321,115 @@ pub fn imported_modules(module: Module) -> Set(String) {
   })
 }
 
-// Build import context from a parsed module's imports.
+// Build import context from a parsed module's imports, read on every target.
 pub fn build_import_context(module: Module) -> ImportContext {
-  // Both unqualified lists are folded the same way, over the name each import
-  // is written under here — its alias where it has one.
-  let fold_unqualified = fn(
-    into: Dict(String, QualifiedName),
-    imports: List(glance.UnqualifiedImport),
-    module_path: String,
-  ) {
-    list.fold(imports, into, fn(unqualified_map, unqualified_import) {
-      let name = case unqualified_import.alias {
-        Some(alias_name) -> alias_name
-        None -> unqualified_import.name
-      }
-      dict.insert(
-        unqualified_map,
-        name,
-        QualifiedName(module: module_path, function: unqualified_import.name),
-      )
-    })
+  import_context_on(module, types.every_target())
+}
+
+// `build_import_context` for a module read on `targets`: its constructors are
+// those of the custom types built on them, and a name its imports bind once per
+// target is bound as `imports_on` binds it for `targets`.
+pub fn build_import_context_on(
+  module: Module,
+  targets: Set(String),
+) -> ImportContext {
+  import_context_on(types_built_on(module, targets), targets)
+}
+
+// `context` with each name its module's imports bind once per target bound by
+// the import built on the default target where `targets` holds it, the target
+// a package naming no target is built for, and by the one built on `targets`
+// otherwise. Empty `targets` leave `context` as it is.
+pub fn imports_on(
+  context: ImportContext,
+  targets: Set(String),
+) -> ImportContext {
+  use <- bool.guard(
+    when: context.gated == [] || set.is_empty(targets),
+    return: context,
+  )
+  let preferred = case
+    set.is_empty(set.intersection(targets, types.default_target()))
+  {
+    True -> targets
+    False -> types.default_target()
   }
-  let #(aliases, unqualified, unqualified_types) =
+  list.fold(context.gated, context, fn(context, binding) {
+    use <- bool.guard(
+      when: set.is_empty(set.intersection(binding.targets, preferred)),
+      return: context,
+    )
+    case binding {
+      GatedModule(name:, path:, ..) ->
+        ImportContext(
+          ..context,
+          aliases: dict.insert(context.aliases, name, path),
+        )
+      GatedValue(name:, item:, ..) ->
+        ImportContext(
+          ..context,
+          unqualified: dict.insert(context.unqualified, name, item),
+        )
+      GatedType(name:, item:, ..) ->
+        ImportContext(
+          ..context,
+          unqualified_types: dict.insert(context.unqualified_types, name, item),
+        )
+    }
+  })
+}
+
+fn import_context_on(module: Module, targets: Set(String)) -> ImportContext {
+  let twice = names_bound_twice(module.imports)
+  let item = fn(import_: glance.Import, unqualified: glance.UnqualifiedImport) {
+    #(
+      option.unwrap(unqualified.alias, unqualified.name),
+      QualifiedName(module: import_.module, function: unqualified.name),
+    )
+  }
+  // Each name bound once goes in its table; each binding of a name bound once
+  // per target goes in `gated`, for `imports_on` to choose among.
+  let #(aliases, unqualified, unqualified_types, gated) =
     list.fold(
       module.imports,
-      #(dict.new(), dict.new(), dict.new()),
+      #(dict.new(), dict.new(), dict.new(), []),
       fn(state, definition) {
         let import_ = definition.definition
-        let module_path = import_.module
-
-        #(
-          case bound_module_name(import_) {
-            Some(#(name, path)) -> dict.insert(state.0, name, path)
-            None -> state.0
-          },
-          fold_unqualified(state.1, import_.unqualified_values, module_path),
-          fold_unqualified(state.2, import_.unqualified_types, module_path),
-        )
+        let built = compiled_targets(definition, types.every_target())
+        let #(aliases, gated) = case bound_module_name(import_) {
+          Some(#(name, path)) ->
+            case list.contains(twice.modules, name) {
+              True -> #(state.0, [
+                GatedModule(name:, path:, targets: built),
+                ..state.3
+              ])
+              False -> #(dict.insert(state.0, name, path), state.3)
+            }
+          None -> #(state.0, state.3)
+        }
+        let #(unqualified, gated) =
+          list.fold(import_.unqualified_values, #(state.1, gated), fn(acc, one) {
+            let #(name, qualified) = item(import_, one)
+            case list.contains(twice.values, name) {
+              True -> #(acc.0, [
+                GatedValue(name:, item: qualified, targets: built),
+                ..acc.1
+              ])
+              False -> #(dict.insert(acc.0, name, qualified), acc.1)
+            }
+          })
+        let #(unqualified_types, gated) =
+          list.fold(import_.unqualified_types, #(state.2, gated), fn(acc, one) {
+            let #(name, qualified) = item(import_, one)
+            case list.contains(twice.types, name) {
+              True -> #(acc.0, [
+                GatedType(name:, item: qualified, targets: built),
+                ..acc.1
+              ])
+              False -> #(dict.insert(acc.0, name, qualified), acc.1)
+            }
+          })
+        #(aliases, unqualified, unqualified_types, gated)
       },
     )
 
@@ -374,26 +457,80 @@ pub fn build_import_context(module: Module) -> ImportContext {
     updates: dict.new(),
     cross_updates: dict.new(),
     package_targets: types.all_targets(),
+    gated:,
   )
-}
-
-// `build_import_context` for a module read on `targets`: its constructors are
-// those of the custom types built on them.
-pub fn build_import_context_on(
-  module: Module,
-  targets: Set(String),
-) -> ImportContext {
-  build_import_context(types_built_on(module, targets))
+  |> imports_on(targets)
 }
 
 // `module` without the custom types `@target` keeps off every one of `targets`.
 fn types_built_on(module: Module, targets: Set(String)) -> Module {
   glance.Module(
     ..module,
-    custom_types: list.filter(module.custom_types, fn(definition) {
-      !set.is_empty(compiled_targets(definition, targets))
-    }),
+    custom_types: list.filter(module.custom_types, is_built_on(_, targets)),
   )
+}
+
+// Whether `@target` keeps `definition` on some of `targets`.
+fn is_built_on(definition: glance.Definition(a), targets: Set(String)) -> Bool {
+  !set.is_empty(compiled_targets(definition, targets))
+}
+
+// The names imports bind, by namespace, each as written in the importing file.
+type BoundNames {
+  BoundNames(modules: List(String), values: List(String), types: List(String))
+}
+
+// The names `imports` bind to more than one thing: a module name to two
+// modules, an unqualified item to two items. Gleam accepts that only of
+// imports `@target` keeps to different targets.
+fn names_bound_twice(
+  imports: List(glance.Definition(glance.Import)),
+) -> BoundNames {
+  let item = fn(import_: glance.Import, item: glance.UnqualifiedImport) {
+    #(option.unwrap(item.alias, item.name), import_.module <> "." <> item.name)
+  }
+  let #(modules, values, types) =
+    list.fold(imports, #([], [], []), fn(acc, definition) {
+      let import_ = definition.definition
+      #(
+        case bound_module_name(import_) {
+          Some(binding) -> [binding, ..acc.0]
+          None -> acc.0
+        },
+        list.append(
+          list.map(import_.unqualified_values, item(import_, _)),
+          acc.1,
+        ),
+        list.append(
+          list.map(import_.unqualified_types, item(import_, _)),
+          acc.2,
+        ),
+      )
+    })
+  BoundNames(
+    modules: ambiguous(modules),
+    values: ambiguous(values),
+    types: ambiguous(types),
+  )
+}
+
+// Whether two of `module`'s imports bind one name to different things, each
+// kept to its own target.
+pub fn binds_an_import_name_per_target(module: Module) -> Bool {
+  let BoundNames(modules:, values:, types:) = names_bound_twice(module.imports)
+  modules != [] || values != [] || types != []
+}
+
+// Each name `bindings` binds to more than one thing.
+fn ambiguous(bindings: List(#(String, String))) -> List(String) {
+  let #(_seen, twice) =
+    list.fold(list.unique(bindings), #(set.new(), set.new()), fn(acc, binding) {
+      case set.contains(acc.0, binding.0) {
+        True -> #(acc.0, set.insert(acc.1, binding.0))
+        False -> #(set.insert(acc.0, binding.0), acc.1)
+      }
+    })
+  set.to_list(twice)
 }
 
 // Every constructor a module defines, keyed by `#(module path, variant)` — the
@@ -437,8 +574,8 @@ fn build_constructor_registry(
 // never reaches, and a type qualifier resolves through the wrong module.
 //
 // Two unaliased imports whose last segments match bind the same name. The
-// compiler rejects that module, so the name is unique in anything that
-// compiles.
+// compiler rejects that module unless `@target` keeps the two to different
+// targets.
 pub fn bound_module_name(import_: glance.Import) -> Option(#(String, String)) {
   case import_.alias {
     Some(glance.Named(name)) -> Some(#(name, import_.module))
@@ -454,16 +591,19 @@ fn last_segment(module_path: String) -> String {
   |> result.unwrap(module_path)
 }
 
-// The signatures `of` recognises among `functions`, keyed by bare function name.
-// Shared by the factory and update-builder maps.
+// The signatures `of` recognises among `definitions`, keyed by bare function
+// name, each read with its imports bound for the targets among `targets` it is
+// built on. Shared by the factory and update-builder maps.
 fn signature_map(
-  functions: List(glance.Function),
+  definitions: List(glance.Definition(glance.Function)),
   context: ImportContext,
+  targets: Set(String),
   of: fn(glance.Function, ImportContext) -> Result(a, Nil),
 ) -> Dict(String, a) {
-  list.fold(functions, dict.new(), fn(acc, function) {
-    case of(function, context) {
-      Ok(signature) -> dict.insert(acc, function.name, signature)
+  list.fold(definitions, dict.new(), fn(acc, definition) {
+    let context = imports_on(context, compiled_targets(definition, targets))
+    case of(definition.definition, context) {
+      Ok(signature) -> dict.insert(acc, definition.definition.name, signature)
       Error(Nil) -> acc
     }
   })
@@ -666,12 +806,10 @@ fn attribute_targets(
 fn native_functions(
   module: Module,
   package_targets: Set(String),
-) -> List(glance.Function) {
-  module.functions
-  |> list.filter(fn(definition) {
+) -> List(glance.Definition(glance.Function)) {
+  list.filter(module.functions, fn(definition) {
     !is_foreign_definition(definition, package_targets)
   })
-  |> list.map(fn(definition) { definition.definition })
 }
 
 // Detect each function in a module that is a *factory*: its body's tail is a
@@ -690,6 +828,7 @@ pub fn factory_map(
     build_import_context_on(module, package_targets)
       |> with_module_path(module_path)
       |> with_cross_constructors(cross_constructors),
+    package_targets,
     factory_signature,
   )
 }
@@ -787,7 +926,9 @@ pub fn awaits_declared_labels(
   package_targets: Set(String),
 ) -> Bool {
   public_functions(module, package_targets)
-  |> list.any(fn(function) { tail_awaits_declared_labels(function, context) })
+  |> list.any(fn(definition) {
+    tail_awaits_declared_labels(definition.definition, context)
+  })
 }
 
 // One function's tail: a construction of another module's record — named
@@ -844,6 +985,7 @@ pub fn public_factory_signatures(
   signature_map(
     public_functions(module, package_targets),
     context,
+    package_targets,
     factory_signature,
   )
   |> dict.to_list()
@@ -865,6 +1007,7 @@ pub fn public_update_signatures(
   signature_map(
     public_functions(module, package_targets),
     context,
+    package_targets,
     update_signature,
   )
   |> dict.to_list()
@@ -876,10 +1019,10 @@ pub fn public_update_signatures(
 fn public_functions(
   module: Module,
   package_targets: Set(String),
-) -> List(glance.Function) {
+) -> List(glance.Definition(glance.Function)) {
   native_functions(module, package_targets)
-  |> list.filter(fn(function) {
-    case function.publicity {
+  |> list.filter(fn(definition) {
+    case definition.definition.publicity {
       glance.Public -> True
       glance.Private -> False
     }
@@ -900,6 +1043,7 @@ pub fn update_map(
     build_import_context_on(module, package_targets)
       |> with_module_path(module_path)
       |> with_cross_constructors(cross_constructors),
+    package_targets,
     update_signature,
   )
 }
