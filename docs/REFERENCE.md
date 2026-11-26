@@ -1207,7 +1207,7 @@ these conventions:
 | Label | Meaning | Example functions |
 |---|---|---|
 | `Stdout` | Writes to standard output | `gleam/io.println`, `logging.log` |
-| `Stderr` | Writes to standard error | `gleam/io.print_error` |
+| `Stderr` | Writes to standard error | `gleam/io.print_error`, `echo` |
 | `Stdin` | Reads from standard input | `gleam/erlang.get_line` |
 | `Process` | Spawns, sends to, or manages BEAM processes | `gleam/erlang/process.send`, `gleam/otp/actor.start` |
 | `Http` | Network HTTP requests | `gleam/httpc.send`, `gleam/fetch.send`, `lustre_http.get` |

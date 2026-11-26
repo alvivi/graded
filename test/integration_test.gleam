@@ -18523,3 +18523,45 @@ fn function_totals(
   |> dict.to_list
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }
+
+// `echo`
+//
+// An `echo` prints its value to standard error, piped or not, with or without
+// an `as` message.
+
+pub fn an_echo_writes_to_standard_error_test() {
+  let root = "build/echo_stderr"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "check proj.plain : []
+check proj.piped : []
+check proj.labelled : [Stderr]
+",
+    ),
+    #(
+      "proj.gleam",
+      "pub fn plain(x: Int) -> Int {
+  echo x
+}
+
+pub fn piped(x: Int) -> Int {
+  x |> echo
+}
+
+pub fn labelled(x: Int) -> Int {
+  x |> echo as \"x\"
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/echo_stderr/proj.gleam: piped echoes a value with effects [Stderr] but declared []",
+    "build/echo_stderr/proj.gleam: plain echoes a value with effects [Stderr] but declared []",
+  ])
+  support.cleanup(root)
+}

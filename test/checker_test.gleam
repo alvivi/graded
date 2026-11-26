@@ -5368,6 +5368,11 @@ pub fn call_kind_apply_sentinel_test() {
   |> should.equal(checker.ComputedValueCall)
 }
 
+pub fn call_kind_echo_sentinel_test() {
+  checker.call_kind(QualifiedName("<echo>", ""))
+  |> should.equal(checker.EchoCall)
+}
+
 pub fn call_kind_closure_sentinel_test() {
   checker.call_kind(QualifiedName("<closure>", "<applied>"))
   |> should.equal(checker.LetBoundValueCall)

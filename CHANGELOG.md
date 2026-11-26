@@ -232,6 +232,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@target(js)` is read on the targets they name. In an Erlang package,
   `make()` whose `@target(erl)` variant prints reads `[Stdout]`, where it could
   read the `@target(js)` variant's `[]`.
+- `echo` is charged `[Stderr]`, piped or not: `fn f(x) { echo x }` reads
+  `[Stderr]` where it read `[]`.
 
 ## [0.23.0] - 2026-11-12
 
