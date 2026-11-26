@@ -18565,3 +18565,51 @@ pub fn labelled(x: Int) -> Int {
   ])
   support.cleanup(root)
 }
+
+pub fn an_echo_in_a_size_or_a_let_assert_message_is_charged_test() {
+  // A `size(…)` expression and a `let assert` message both run. A statement
+  // starting with `-` after a `let assert` message is read into the message,
+  // which is still walked.
+  let root = "build/echo_size_and_message"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "check proj.size_expression : []
+check proj.assert_message : []
+check proj.assert_then_minus : []
+",
+    ),
+    #(
+      "proj.gleam",
+      "fn print_then_one() -> Int {
+  echo \"hidden\"
+  1
+}
+
+pub fn size_expression(width: Int) -> BitArray {
+  <<0:size({ echo width })>>
+}
+
+pub fn assert_message(values: List(Int)) -> Int {
+  let assert [x] = values as { echo \"message\" }
+  x
+}
+
+pub fn assert_then_minus(values: List(Int)) -> Int {
+  let assert [_] = values as \"label\"
+  -print_then_one()
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/echo_size_and_message/proj.gleam: assert_then_minus echoes a value with effects [Stderr] but declared []",
+    "build/echo_size_and_message/proj.gleam: assert_message echoes a value with effects [Stderr] but declared []",
+    "build/echo_size_and_message/proj.gleam: size_expression echoes a value with effects [Stderr] but declared []",
+  ])
+  support.cleanup(root)
+}

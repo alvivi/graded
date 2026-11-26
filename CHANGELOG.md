@@ -234,6 +234,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read the `@target(js)` variant's `[]`.
 - `echo` is charged `[Stderr]`, piped or not: `fn f(x) { echo x }` reads
   `[Stderr]` where it read `[]`.
+- What a `let assert` message and a bit-array `size(…)` expression do is
+  charged: `let assert [x] = xs as { echo "none" }` and
+  `<<0:size({ echo n })>>` read `[Stderr]` where they read `[]`.
 
 ## [0.23.0] - 2026-11-12
 

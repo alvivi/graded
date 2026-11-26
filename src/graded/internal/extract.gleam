@@ -1416,7 +1416,7 @@ fn spelled_in(acc: Set(String), expression: Expression) -> Set(String) {
       |> spelled_in_fields(arguments_before)
       |> spelled_in_fields(arguments_after)
     glance.BitString(segments:, ..) ->
-      list.fold(segments, acc, fn(acc, segment) { spelled_in(acc, segment.0) })
+      list.fold(segment_expressions(segments), acc, spelled_in)
     glance.Case(subjects:, clauses:, ..) ->
       list.fold(clauses, list.fold(subjects, acc, spelled_in), fn(acc, clause) {
         spelled_in_option(spelled_in(acc, clause.body), clause.guard)
@@ -1426,6 +1426,23 @@ fn spelled_in(acc: Set(String), expression: Expression) -> Set(String) {
     glance.Echo(expression:, message:, ..) ->
       spelled_in_option(spelled_in_option(acc, expression), message)
   }
+}
+
+// The expressions a bit array evaluates: each segment's value and each
+// `size(…)` expression.
+fn segment_expressions(
+  segments: List(#(Expression, List(glance.BitStringSegmentOption(Expression)))),
+) -> List(Expression) {
+  list.flat_map(segments, fn(segment) {
+    let sizes =
+      list.filter_map(segment.1, fn(option) {
+        case option {
+          glance.SizeValueOption(size) -> Ok(size)
+          _ -> Error(Nil)
+        }
+      })
+    [segment.0, ..sizes]
+  })
 }
 
 // Seed each named top-level parameter as `BoundLocal`, bound at the function's
@@ -2078,8 +2095,14 @@ fn extract_from_statement(
       extract_from_expression(expression, context, env),
       env,
     )
-    glance.Assignment(pattern:, value: expression, ..) -> {
-      let result = extract_from_expression(expression, context, env)
+    glance.Assignment(kind:, pattern:, value: expression, ..) -> {
+      let value_result = extract_from_expression(expression, context, env)
+      // A `let assert` message is walked in the scope before the pattern binds.
+      let result = case kind {
+        glance.LetAssert(message: Some(message)) ->
+          merge(value_result, extract_from_expression(message, context, env))
+        glance.LetAssert(message: None) | glance.Let -> value_result
+      }
       let next_env = bind_assignment(pattern, expression, context, env)
       #(result, next_env)
     }
@@ -2819,13 +2842,9 @@ fn extract_from_expression(
     glance.Panic(message:, ..) -> merge_optional(empty(), message, context, env)
     glance.Todo(message:, ..) -> merge_optional(empty(), message, context, env)
 
-    // Bit string: walk each segment's value expression.
+    // Bit string: walk each segment's value and `size(…)` expressions.
     glance.BitString(segments:, ..) ->
-      fold_expressions(
-        list.map(segments, fn(segment) { segment.0 }),
-        context,
-        env,
-      )
+      fold_expressions(segment_expressions(segments), context, env)
 
     // Leaf nodes (no sub-expressions that can carry effects)
     glance.Variable(..)
