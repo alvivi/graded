@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Many answers change, each listed below beside what it read before, so a
+  `check` that passed on 0.23.0 can fail on this version, and one that failed
+  can pass.
 - graded runs faster on large projects: `graded infer` over graded's own source
   takes about 2.5 s where it took 3.5 s.
 - A package whose `targets` names both takes about 15% longer to analyse
