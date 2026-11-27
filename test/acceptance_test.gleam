@@ -200,29 +200,32 @@ pub fn built_field_relayed() -> Nil {
 }
 "
 
-fn lines() -> List(String) {
-  let root = fixture("build/acceptance_shapes", "")
+// The inferred lines of the fixture, its standard library installed at
+// `stdlib`.
+fn lines_on(stdlib: String) -> List(String) {
+  let root = fixture_on("build/acceptance_shapes_" <> stdlib, "", stdlib)
   let assert Ok(lines) = graded.inferred_lines(root)
   support.cleanup(root)
   lines
 }
 
 fn fixture(directory: String, spec: String) -> String {
+  fixture_on(directory, spec, "1.0.5")
+}
+
+fn fixture_on(directory: String, spec: String, stdlib: String) -> String {
   let root =
     support.write_fixture(directory, [
       #("app.graded", spec),
       #("gleam.toml", "name = \"app\"\nversion = \"1.0.0\"\n"),
-      #(
-        "manifest.toml",
-        "packages = [
-  { name = \"gleam_stdlib\", version = \"1.0.5\" },
+      #("manifest.toml", "packages = [
+  { name = \"gleam_stdlib\", version = \"" <> stdlib <> "\" },
   { name = \"lustre\", version = \"5.7.1\" },
 ]
-",
-      ),
+"),
       #(
         "build/packages/packages.toml",
-        "[packages]\ngleam_stdlib = \"1.0.5\"\nlustre = \"5.7.1\"\n",
+        "[packages]\ngleam_stdlib = \"" <> stdlib <> "\"\nlustre = \"5.7.1\"\n",
       ),
       #(
         "build/packages/lustre/gleam.toml",
@@ -262,8 +265,13 @@ fn answer(lines: List(String), function: String) -> String {
   effects
 }
 
+// Every standard-library release the record covers gives the same answers.
 pub fn catalogued_shapes_read_the_catalogs_answers_test() {
-  let lines = lines()
+  list.each(["1.0.5", "1.1.0", "1.2.0"], catalogued_shapes_on)
+}
+
+fn catalogued_shapes_on(stdlib: String) -> Nil {
+  let lines = lines_on(stdlib)
   [
     #("inline_callback_effect", "[Stdout]"),
     #("named_callback_effect", "[Stdout]"),
@@ -287,8 +295,20 @@ pub fn catalogued_shapes_read_the_catalogs_answers_test() {
   ]
   |> list.each(fn(row) {
     let #(function, expected) = row
-    #(function, answer(lines, function)) |> should.equal(#(function, expected))
+    #(stdlib, function, answer(lines, function))
+    |> should.equal(#(stdlib, function, expected))
   })
+}
+
+// A standard-library release past the record reads its catalog lines as
+// written lines: a printer relayed through `list.each` is charged as run.
+pub fn a_standard_library_release_past_the_record_reads_as_written_test() {
+  let lines = lines_on("1.3.0")
+  #(
+    answer(lines, "list_relayed_and_called"),
+    answer(lines, "printer_relayed_and_called"),
+  )
+  |> should.equal(#("[Stdout, Unknown]", "[Stdout, Unknown]"))
 }
 
 // The two untyped shapes are ones the type inference skips: `coverage` lists

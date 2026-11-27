@@ -325,6 +325,37 @@ pub fn every_bundled_record_names_what_its_catalog_file_answers_for_test() {
   })
 }
 
+// gleam_stdlib's record covers every release from 1.0.0 to 1.2.0, and
+// `gleam/dynamic/decode.identity`, added in 1.2.0, on 1.2.0 alone.
+pub fn the_standard_library_record_covers_each_release_it_reviewed_test() {
+  let assert Ok(text) =
+    simplifile.read(support.catalog_directory() <> "/gleam_stdlib@1.0.0.audit")
+  let assert Ok(file) = audit.parse(text)
+  let covered = fn(version) {
+    let applicable = audit.applicable(file, version)
+    #(
+      set.contains(applicable.reviewed, QualifiedName("gleam/io", "println")),
+      set.contains(
+        applicable.container_results,
+        QualifiedName("gleam/dynamic/decode", "identity"),
+      ),
+    )
+  }
+  [
+    #(#(1, 0, 0), #(True, False)),
+    #(#(1, 0, 5), #(True, False)),
+    #(#(1, 1, 0), #(True, False)),
+    #(#(1, 2, 0), #(True, True)),
+    #(#(1, 1, 1), #(False, False)),
+    #(#(1, 2, 1), #(False, False)),
+    #(#(1, 3, 0), #(False, False)),
+  ]
+  |> list.each(fn(row) {
+    let #(version, _) = row
+    #(version, covered(version)) |> should.equal(row)
+  })
+}
+
 fn answered_paths(catalog: types.GradedFile) -> set.Set(String) {
   list.fold(catalog.lines, set.new(), fn(acc, line) {
     case line {
