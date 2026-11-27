@@ -1,11 +1,12 @@
-// gleam_stdlib, reviewed against the source of 1.0.0, 1.0.1, 1.0.2, 1.0.3 and 1.0.5.
-// Every release from 1.0.0 to 1.0.5 is reviewed; 1.0.4 was never published.
+// gleam_stdlib, reviewed against the source of 1.0.0, 1.0.1, 1.0.2, 1.0.3, 1.0.5,
+// 1.1.0 and 1.2.0. Every release from 1.0.0 to 1.2.0 is reviewed; 1.0.4 was
+// never published.
 // The pure modules' functions hand their callbacks values drawn from their
 // data arguments only, never run a function nested in one (they cannot, by
 // their types, save the decoder runners), and return data drawn from their
 // arguments and their callbacks' results.
 
-covers 1.0.0 to 1.0.5
+covers 1.0.0 to 1.0.5, 1.1.0, 1.2.0
 container gleam/dict.Dict
 container gleam/dict.TransientDict
 container gleam/string_tree.StringTree
@@ -468,3 +469,7 @@ container_result gleam/uri.percent_encode
 container_result gleam/uri.pop_codeunit
 container_result gleam/uri.query_to_string
 container_result gleam/uri.to_string
+
+// Added in 1.2.0.
+covers 1.2.0
+container_result gleam/dynamic/decode.identity

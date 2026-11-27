@@ -59,8 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   function in its module. Add `runs : []` to a line whose function runs none of
   its arguments.
 - The bundled catalog states what each name a review of the package covered
-  does with the function values it is handed: `list.each` and the other relays
-  stay exact, and `string.inspect(x)` stays `[]`. `effect.from` charges a
+  does with the function values it is handed. The review of gleam_stdlib
+  covers 1.0.0 to 1.2.0, where `list.each` and the other relays stay exact and
+  `string.inspect(x)` stays `[]`. `effect.from` charges a
   named callback as it charges an inline one, so a Lustre `init` whose effect
   prints reads `[Stdout]` where it read `[Unknown]` or `[Stdout, Unknown]`. A
   name no review covered, or an installed version newer than the review, is
